@@ -1,0 +1,55 @@
+name: review-gate
+description: >-
+  Risk-tiered pull request review gate. Docs and small changes pass at once.
+  Other changes wait for Codex; if Codex fails or times out, a backup model
+  reviews through Vercel AI Gateway. Posts the `review-gate` commit status.
+
+inputs:
+  mode:
+    description: "`gate` evaluates one pull request; `sweep` repairs stalled ones."
+    required: true
+  github-token:
+    description: GITHUB_TOKEN with pull-requests, issues, and statuses write (plus actions write for sweep).
+    required: true
+  pr-number:
+    description: Pull request number for `gate` mode.
+    required: false
+    default: ""
+  codex-trigger-token:
+    description: >-
+      Optional token for a Codex-linked GitHub user. Used only to post
+      `@codex review`. Falls back to github-token when empty.
+    required: false
+    default: ""
+  ai-gateway-api-key:
+    description: Vercel AI Gateway key for the backup review.
+    required: false
+    default: ""
+  policy-path:
+    description: Repository policy file, read from the base branch.
+    required: false
+    default: .github/review-policy.json
+  fallback-model:
+    description: Backup review model on Vercel AI Gateway.
+    required: false
+    default: anthropic/claude-sonnet-5.5
+  claude-code-version:
+    description: Pinned Claude Code CLI version for the backup review.
+    required: false
+    default: "2.1.316"
+
+runs:
+  using: composite
+  steps:
+    - name: Run review-gate
+      shell: bash
+      env:
+        RG_MODE: ${{ inputs.mode }}
+        RG_PR: ${{ inputs.pr-number }}
+        RG_GITHUB_TOKEN: ${{ inputs.github-token }}
+        RG_CODEX_TOKEN: ${{ inputs.codex-trigger-token }}
+        RG_GATEWAY_KEY: ${{ inputs.ai-gateway-api-key }}
+        RG_POLICY_PATH: ${{ inputs.policy-path }}
+        RG_FALLBACK_MODEL: ${{ inputs.fallback-model }}
+        RG_CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+      run: node "$GITHUB_ACTION_PATH/review-gate/src/main.mjs"

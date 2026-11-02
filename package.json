@@ -1,0 +1,7 @@
+{
+  "name": "noahjenkins-github-automation",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test review-gate/test/" },
+  "engines": { "node": ">=20" }
+}
