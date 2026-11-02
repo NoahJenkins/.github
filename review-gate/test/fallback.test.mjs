@@ -1,4 +1,7 @@
 import test from "node:test";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { rightSideLines } from "../src/diff.mjs";
 import { buildPrompt, extractReviewRules, normalizeFindings, validateVerdict } from "../src/fallback.mjs";
@@ -30,19 +33,26 @@ test("right-side lines include added and context lines only", () => {
   assert.deepEqual([...m.get("new.ts")], [1, 2]);
 });
 
-test("findings on diff lines go inline; others go to the body", () => {
-  const { inline, other } = normalizeFindings(
+test("findings move to the line that matches their evidence; unverifiable ones go to the body", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rg-test-"));
+  await mkdir(join(dir, "src"));
+  await writeFile(join(dir, "src/a.ts"), "const a = 1;\nconst b = 3;\nconst c = 4;\nexport { a };\n");
+  const { inline, other } = await normalizeFindings(
     [
-      { path: "/tmp/x/src/a.ts", line: 2, severity: "P1", title: "wrong value", detail: "b changed" },
-      { path: "./src/a.ts", line: 99, severity: "P0", title: "outside", detail: "" },
+      // Right line.
+      { path: join(dir, "src/a.ts"), line: 2, severity: "P1", title: "wrong value", detail: "b", evidence: "const b = 3;" },
+      // Diff-file numbering (off by 6): moved to line 3.
+      { path: "./src/a.ts", line: 9, severity: "P1", title: "c", detail: "", evidence: "const c = 4;" },
+      // Evidence not in the file: body only.
+      { path: "src/a.ts", line: 1, severity: "P0", title: "ghost", detail: "", evidence: "rm -rf /" },
     ],
-    "/tmp/x",
+    dir,
     rightSideLines(DIFF),
   );
-  assert.equal(inline.length, 1);
-  assert.equal(inline[0].path, "src/a.ts");
-  assert.equal(inline[0].side, "RIGHT");
-  assert.equal(other[0].path, "src/a.ts");
+  assert.deepEqual(inline.map((c) => [c.path, c.line, c.side]), [["src/a.ts", 2, "RIGHT"], ["src/a.ts", 3, "RIGHT"]]);
+  assert.equal(other.length, 1);
+  assert.equal(other[0].title, "ghost");
+  await rm(dir, { recursive: true, force: true });
 });
 
 test("any finding forces a fail verdict; malformed output is rejected", () => {

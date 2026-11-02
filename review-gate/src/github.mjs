@@ -37,7 +37,7 @@ export function githubClient(token, { dryRun = false, log = console.log } = {}) 
 
   const write = (method) => async (path, body) => {
     if (dryRun) {
-      log(`[dry-run] ${method} ${path} ${body ? JSON.stringify(body).slice(0, 400) : ""}`);
+      log(`[dry-run] ${method} ${path} ${body ? JSON.stringify(body).slice(0, 4000) : ""}`);
       return { id: 0, dryRun: true };
     }
     return request(method, path, { body });

@@ -3,6 +3,7 @@ import { dependabotDecision } from "./dependabot.mjs";
 import { codexVerdict, CODEX_BOT } from "./codex.mjs";
 import { rightSideLines } from "./diff.mjs";
 import { buildPrompt, checkoutCommit, extractReviewRules, normalizeFindings, runBackupReview } from "./fallback.mjs";
+import { rm } from "node:fs/promises";
 import { STATE_MARKER, consecutiveFindingRounds, parseState, renderState } from "./state.mjs";
 
 export const CONTEXT = "review-gate";
@@ -152,9 +153,13 @@ export async function backupReview(ctx, pr, files, c, codexReason) {
     ctx.log(`backup review attempt ${attempt}: ${result.ok ? result.verdict : result.error} (cost $${(result.cost || 0).toFixed(3)})`);
     if (result.ok) break;
   }
-  if (!result.ok) return result;
+  if (!result.ok) {
+    await rm(dir, { recursive: true, force: true });
+    return result;
+  }
 
-  const { inline, other } = normalizeFindings(result.findings, dir, rightSideLines(diff));
+  const { inline, other } = await normalizeFindings(result.findings, dir, rightSideLines(diff));
+  await rm(dir, { recursive: true, force: true });
   const name = modelName(ctx.fallbackModel);
   const lines = [
     `### review-gate backup review (${name})`,
