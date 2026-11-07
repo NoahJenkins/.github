@@ -2,6 +2,7 @@
 // every field the repository declares for that runtime moves with it. Only this
 // trusted code writes those fields; a model never edits them.
 import { matchesAny } from "../../review-gate/src/glob.mjs";
+import { createHash } from "node:crypto";
 import { sha256 } from "./digest.mjs";
 
 const FROM = /^(\s*FROM\s+(?:--platform=\S+\s+)?)([a-z0-9._/-]+):([\w.-]+)@sha256:([0-9a-f]{64})(\s+AS\s+[\w.-]+)?\s*$/i;
@@ -62,6 +63,55 @@ export function runtimeMoves(policy, changes) {
 // escape "regex" renders values the way a JavaScript regex literal spells them
 // (for example oven\/bun:1\.4\.0-slim inside /FROM .../).
 const ESCAPES = { regex: (s) => s.replace(/[.\/+*?()[\]{}|^$\\]/g, "\\$&") };
+
+// Some tags carry only a major ("node:25-bookworm-slim") while repositories
+// assert an exact version. With versionFromImageEnv, the exact version comes
+// from the digest-pinned image's own config (for example NODE_VERSION=25.9.0),
+// fetched by digest and verified byte for byte. Nothing is pulled or run.
+const ACCEPT_INDEX = "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json";
+
+async function imageEnv(image, digest, fetcher) {
+  if (image.includes(".") && image.split("/")[0].includes(".")) throw new Error(`${image}: versionFromImageEnv supports Docker Hub images only`);
+  const repo = image.includes("/") ? image : `library/${image}`;
+  const auth = await fetcher(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull`);
+  if (!auth.ok) throw new Error(`${image}: registry token request failed (${auth.status})`);
+  const { token } = await auth.json();
+  const get = async (kind, d) => {
+    const res = await fetcher(`https://registry-1.docker.io/v2/${repo}/${kind}/${d}`, { headers: { authorization: `Bearer ${token}`, accept: ACCEPT_INDEX }, redirect: "follow", signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`${image}: registry ${kind} ${d.slice(0, 19)} returned ${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > 4 * 1024 * 1024 || `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== d) throw new Error(`${image}: registry content does not match digest ${d.slice(0, 19)}`);
+    return JSON.parse(bytes.toString("utf8"));
+  };
+  let manifest = await get("manifests", digest);
+  if (Array.isArray(manifest.manifests)) {
+    const amd = manifest.manifests.filter((m) => m.platform?.os === "linux" && m.platform?.architecture === "amd64" && !m.platform?.variant);
+    if (amd.length !== 1) throw new Error(`${image}: no single linux/amd64 image in the index`);
+    manifest = await get("manifests", amd[0].digest);
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(manifest.config?.digest ?? "")) throw new Error(`${image}: manifest has no config digest`);
+  const config = await get("blobs", manifest.config.digest);
+  return Object.fromEntries((config.config?.Env ?? []).map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]));
+}
+
+export async function exactImageVersion(runtime, v, fetcher = fetch) {
+  const env = await imageEnv(runtime.image, `sha256:${v.digest}`, fetcher);
+  const value = env[runtime.versionFromImageEnv];
+  if (!/^\d+(?:\.\d+){0,2}$/.test(value ?? "")) throw new Error(`${runtime.image}:${v.tag} has no usable ${runtime.versionFromImageEnv}`);
+  const parts = value.split(".");
+  if (parts[0] !== v.major) throw new Error(`${runtime.image}:${v.tag}: ${runtime.versionFromImageEnv}=${value} disagrees with the tag's major ${v.major}`);
+  return { ...v, version: value, major: parts[0], minor: parts.length > 1 ? parts.slice(0, 2).join(".") : null, precision: parts.length };
+}
+
+export async function resolveImageVersions(policy, moves, { fetcher = fetch } = {}) {
+  const out = [];
+  for (const move of moves) {
+    const runtime = policy.runtimes.find((r) => r.name === move.runtime);
+    if (!runtime.versionFromImageEnv) { out.push(move); continue; }
+    out.push({ ...move, from: await exactImageVersion(runtime, move.from, fetcher), to: await exactImageVersion(runtime, move.to, fetcher) });
+  }
+  return out;
+}
 
 function render(template, v, image, escape) {
   const esc = ESCAPES[escape] ?? ((s) => s);
