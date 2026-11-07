@@ -76,11 +76,11 @@ test("ambiguous image moves are rejected", () => {
   );
 });
 
-test("the contract holds at rest in a consistent tree", () => {
-  assert.deepEqual(contractAtRest(policy(), tree()), []);
+test("the contract holds at rest in a consistent tree", async () => {
+  assert.deepEqual(await contractAtRest(policy(), tree()), []);
   const drifted = tree();
   drifted.set("scripts/ops/smoke-api-docker.sh", "echo '1.3.9'\n");
-  assert.equal(contractAtRest(policy(), drifted).length, 1);
+  assert.equal((await contractAtRest(policy(), drifted)).length, 1);
 });
 
 test("requested targets cover manifests, images, actions, and go modules", () => {
@@ -110,4 +110,67 @@ test("regex-escaped image references in safety tests move too", () => {
   const moves = runtimeMoves(p, [{ path: "apps/api/Dockerfile", before: dockerfile(NODE_OLD, BUN_OLD), after: dockerfile(NODE_OLD, BUN_NEW) }]);
   const { edits } = syncRuntimeFields(p, moves, files);
   assert.equal(edits.get("scripts/safety/test-do-deployment-contract.sh"), `expectMatch(d, /FROM oven\\/bun:1\\.4\\.4-slim@sha256:${"b".repeat(64)} AS runtime/);\n`);
+});
+
+// Codex P1 on Metriks #180: smoke-api-docker.sh asserts Node "v24.19.0", but the
+// tag only says "24". The exact version comes from the digest-pinned image config.
+import { createHash } from "node:crypto";
+import { resolveImageVersions } from "../src/contract.mjs";
+
+function fakeRegistry() {
+  const blobs = new Map();
+  let tamper = false;
+  const put = (body) => {
+    const d = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    blobs.set(d, body);
+    return d;
+  };
+  // Returns the index digest an image with this environment would have.
+  const image = (env) => {
+    const config = put(JSON.stringify({ config: { Env: env } }));
+    const manifest = put(JSON.stringify({ mediaType: "application/vnd.oci.image.manifest.v1+json", config: { digest: config } }));
+    return put(JSON.stringify({ mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{ digest: manifest, platform: { os: "linux", architecture: "amd64" } }] }));
+  };
+  const fetcher = async (url) => {
+    if (url.startsWith("https://auth.docker.io/")) return new Response(JSON.stringify({ token: "t" }));
+    const m = url.match(/\/v2\/library\/node\/(?:manifests|blobs)\/(sha256:[0-9a-f]{64})$/);
+    const body = m && blobs.get(m[1]);
+    if (!body) return new Response("nope", { status: 404 });
+    return new Response(tamper ? body.replace("linux", "linux ") : body);
+  };
+  return { image, fetcher, tamper: () => { tamper = true; } };
+}
+const nodeRef = (major, d) => `node:${major}-bookworm-slim@${d}`;
+
+test("versionFromImageEnv supplies the exact runtime version from the pinned image config", async () => {
+  const p = policy((raw) => {
+    raw.runtimes[1].versionFromImageEnv = "NODE_VERSION";
+    raw.runtimes[1].fields.push({ files: ["scripts/ops/smoke-api-docker.sh"], template: "v{version}" });
+    return raw;
+  });
+  const reg = fakeRegistry();
+  const oldRef = nodeRef(24, reg.image(["NODE_VERSION=24.19.0"]));
+  const newRef = nodeRef(25, reg.image(["NODE_VERSION=25.9.0", "YARN_VERSION=1.22.22"]));
+  const moves = runtimeMoves(p, [{ path: "apps/api/Dockerfile", before: dockerfile(oldRef, BUN_OLD), after: dockerfile(newRef, BUN_OLD) }]);
+  const resolved = await resolveImageVersions(p, moves, { fetcher: reg.fetcher });
+  assert.deepEqual([resolved[0].from.version, resolved[0].to.version, resolved[0].to.major], ["24.19.0", "25.9.0", "25"]);
+  const files = tree({ node: oldRef });
+  files.set("scripts/ops/smoke-api-docker.sh", `${files.get("scripts/ops/smoke-api-docker.sh")}[[ "\${node_version}" == 'v24.19.0' ]] || fail "expected Node v24.19.0"\n`);
+  files.set("apps/api/Dockerfile", dockerfile(newRef, BUN_OLD));
+  const after = new Map([...files, ...syncRuntimeFields(p, resolved, files).edits]);
+  assert.match(after.get("scripts/ops/smoke-api-docker.sh"), /== 'v25\.9\.0' \]\] \|\| fail "expected Node v25\.9\.0"/);
+  assert.equal(JSON.parse(after.get("package.json")).engines.node, "25.x", "major-only fields still use the major");
+});
+
+test("versionFromImageEnv fails closed on tampered content, a missing variable, or a major mismatch", async () => {
+  const p = policy((raw) => ({ ...raw, runtimes: [{ ...raw.runtimes[1], versionFromImageEnv: "NODE_VERSION" }] }));
+  const move = (reg, oldEnv, newMajor, newEnv) => runtimeMoves(p, [{ path: "apps/api/Dockerfile", before: dockerfile(nodeRef(24, reg.image(oldEnv)), BUN_OLD), after: dockerfile(nodeRef(newMajor, reg.image(newEnv)), BUN_OLD) }]);
+  const tampered = fakeRegistry();
+  const m1 = move(tampered, ["NODE_VERSION=24.19.0"], 25, ["NODE_VERSION=25.9.0"]);
+  tampered.tamper();
+  await assert.rejects(resolveImageVersions(p, m1, { fetcher: tampered.fetcher }), /does not match digest/);
+  const missing = fakeRegistry();
+  await assert.rejects(resolveImageVersions(p, move(missing, ["NODE_VERSION=24.19.0"], 25, ["OTHER=1"]), { fetcher: missing.fetcher }), /no usable NODE_VERSION/);
+  const wrong = fakeRegistry();
+  await assert.rejects(resolveImageVersions(p, move(wrong, ["NODE_VERSION=24.19.0"], 25, ["NODE_VERSION=26.0.0"]), { fetcher: wrong.fetcher }), /disagrees with the tag's major/);
 });

@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, lstatSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { matchesAny } from "../../review-gate/src/glob.mjs";
-import { dockerFroms, isDockerfile, syncRuntimeFields } from "./contract.mjs";
+import { dockerFroms, exactImageVersion, isDockerfile, syncRuntimeFields } from "./contract.mjs";
 import { POLICY_PATH, parsePolicy, inferenceGaps } from "./policy.mjs";
 import { runOpenAI, TransportError } from "./transport-openai.mjs";
 
@@ -22,7 +22,7 @@ function files(root, accept, prefix = "", out = new Map()) {
 
 // The contract holds at rest when syncing the current runtime to itself finds
 // every required field (same value on both sides of the move).
-export function contractAtRest(policy, tree) {
+export async function contractAtRest(policy, tree, { fetcher = fetch } = {}) {
   const problems = [];
   const docker = [...tree].filter(([p]) => isDockerfile(p));
   for (const runtime of policy.runtimes) {
@@ -39,8 +39,9 @@ export function contractAtRest(policy, tree) {
       continue;
     }
     const parts = m.groups.version.split(".");
-    const v = { ref, tag, digest: dg, version: m.groups.version, major: parts[0], minor: parts.length > 1 ? parts.slice(0, 2).join(".") : null };
+    let v = { ref, tag, digest: dg, version: m.groups.version, major: parts[0], minor: parts.length > 1 ? parts.slice(0, 2).join(".") : null };
     try {
+      if (runtime.versionFromImageEnv) v = await exactImageVersion(runtime, v, fetcher);
       syncRuntimeFields(policy, [{ runtime: runtime.name, image: runtime.image, from: v, to: v }], tree);
     } catch (e) {
       problems.push(e.message);
@@ -89,7 +90,7 @@ export async function selftest({ root, log }) {
   log(`policy: ${POLICY_PATH} parses (${Object.keys(policy.eligibility.updates).join(", ")}; checks: ${policy.ci.requiredChecks.join(", ")})`);
   const globs = policy.runtimes.flatMap((r) => r.fields.flatMap((f) => f.files));
   const tree = files(root, (p) => isDockerfile(p) || (globs.length > 0 && matchesAny(p, globs)));
-  const problems = contractAtRest(policy, tree);
+  const problems = await contractAtRest(policy, tree);
   for (const p of problems) log(`::error title=pr-repair runtime contract::${p}`);
   log(`runtime contract: ${policy.runtimes.length} runtime(s), ${problems.length ? `${problems.length} problem(s)` : "every required field holds the current value"}`);
   log(await fakeEndpointCheck());

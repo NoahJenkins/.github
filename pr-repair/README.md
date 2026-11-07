@@ -99,7 +99,12 @@ declared field and the candidate must have no field left on the old value.
 ```
 
 Placeholders: `{major}`, `{minor}` (major.minor), `{version}`, `{tag}`,
-`{imageRef}` (`image:tag@sha256:digest`). Matches are whole tokens: `Node 24`
+`{imageRef}` (`image:tag@sha256:digest`). When a tag carries only a major
+(`node:25-bookworm-slim`) but the repository asserts an exact version, set
+`"versionFromImageEnv": "NODE_VERSION"`: the exact version is read from the
+digest-pinned image's own config through the registry (Docker Hub), verified
+against the digest byte for byte, and must agree with the tag's major. Nothing
+is pulled or run. Matches are whole tokens: `Node 24`
 never rewrites `Node 24.19.0`. A required field that holds neither value, or a
 field that needs more precision than the tag provides, stops the work as
 `unsupported-scope`. The `contract` job checks the contract holds at rest on

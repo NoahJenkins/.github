@@ -1,7 +1,7 @@
 // Repository reads shared by every mode: file contents at exact commits, the
 // original update's own change set, and runtime-contract inputs.
 import { matchesAny } from "../../review-gate/src/glob.mjs";
-import { isDockerfile, requestedTargets, runtimeMoves, syncRuntimeFields } from "./contract.mjs";
+import { isDockerfile, requestedTargets, resolveImageVersions, runtimeMoves, syncRuntimeFields } from "./contract.mjs";
 import { SHA, sha256 } from "./digest.mjs";
 
 const enc = (p) => p.split("/").map(encodeURIComponent).join("/");
@@ -58,7 +58,7 @@ export async function originalRequest(gh, repo, policy, baseSha, originalHead) {
   if (lock && cs.changes.some((c) => c.path === lock) && !targets.some((t) => t.kind === "npm")) {
     targets.push({ path: lock, kind: "identical", key: lock, value: sha256(await fileAt(gh, repo, lock, originalHead)) });
   }
-  return { moves: runtimeMoves(policy, cs.changes), targets, changed: cs.changes.map((c) => c.path) };
+  return { moves: await resolveImageVersions(policy, runtimeMoves(policy, cs.changes)), targets, changed: cs.changes.map((c) => c.path) };
 }
 
 // Every file the moved runtimes' fields address, at one commit.
