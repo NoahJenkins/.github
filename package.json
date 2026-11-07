@@ -2,6 +2,11 @@
   "name": "noahjenkins-github-automation",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test review-gate/test/" },
-  "engines": { "node": ">=20" }
+  "scripts": {
+    "test": "node --test review-gate/test/ pr-repair/test/",
+    "test:docker": "PR_REPAIR_DOCKER_TESTS=1 node --test pr-repair/test/docker.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

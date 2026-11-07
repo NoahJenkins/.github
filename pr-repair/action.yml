@@ -1,0 +1,171 @@
+name: pr-repair
+description: >-
+  Bounded repair, independent review, and native merge for automated
+  dependency pull requests. One mode per job; see pr-repair/README.md for the
+  consumer contract and the credential each mode may receive.
+
+inputs:
+  mode:
+    description: "plan | prepare | infer | validate | publish | selftest"
+    required: true
+  token:
+    description: >-
+      plan/publish: the controller App installation token. prepare/validate:
+      a read-only GITHUB_TOKEN. infer/selftest: leave empty.
+    required: false
+    default: ""
+  approver-token:
+    description: plan only, when merge.approve is approver-token or Codex review is required. Never given to other modes.
+    required: false
+    default: ""
+  app-id:
+    description: Controller App id (plan, prepare, publish).
+    required: false
+    default: ""
+  app-slug:
+    description: Controller App slug (plan, publish).
+    required: false
+    default: ""
+  enabled:
+    description: "plan: 'true' activates writes. Anything else reports status only."
+    required: false
+    default: "false"
+  credential-ready:
+    description: "plan: 'true' when the inference job's credential exists (from a credential-free preflight)."
+    required: false
+    default: "false"
+  exclusive-active:
+    description: "plan: 'true' when another dependency controller is active; pr-repair then holds off."
+    required: false
+    default: "false"
+  task:
+    description: One task from plan's tasks output (prepare, infer, validate, publish).
+    required: false
+    default: ""
+  api-key:
+    description: infer only. The provider credential for the configured transport.
+    required: false
+    default: ""
+  dry-run:
+    description: "'1' logs every write instead of performing it."
+    required: false
+    default: ""
+
+outputs:
+  tasks:
+    description: plan only. JSON array of reserved tasks.
+    value: ${{ steps.run.outputs.tasks }}
+  has-tasks:
+    description: plan only. 'true' when tasks were reserved.
+    value: ${{ steps.run.outputs.has_tasks }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in plan|prepare|infer|validate|publish|selftest) ;; *) echo "::error::unknown pr-repair mode: $MODE"; exit 2 ;; esac
+        mkdir -p "$RUNNER_TEMP/pr-repair"
+
+    - name: Download curated input
+      if: inputs.mode == 'infer'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: pr-repair-input-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair
+
+    - name: Download model output
+      if: (inputs.mode == 'validate' && fromJSON(inputs.task || '{}').kind == 'repair') || (inputs.mode == 'publish' && fromJSON(inputs.task || '{}').kind != 'sync')
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: pr-repair-proposal-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair
+
+    - name: Download validation result
+      if: inputs.mode == 'publish' && fromJSON(inputs.task || '{}').kind != 'review'
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: pr-repair-validated-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair/validated
+
+    - name: Check out the exact candidate head without credentials
+      if: inputs.mode == 'validate'
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      with:
+        ref: ${{ fromJSON(inputs.task || '{}').head }}
+        token: ${{ inputs.token }}
+        persist-credentials: false
+        path: .pr-repair-candidate
+
+    - name: Install the pinned Copilot CLI and verify it offline
+      if: inputs.mode == 'infer'
+      shell: bash
+      env:
+        ENGINE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        policy="$RUNNER_TEMP/pr-repair/policy.json"
+        transport=$(node -e 'const p=require(process.argv[1]);process.stdout.write(String(p.inference?.transport??""))' "$policy")
+        if [ "$transport" != "copilot-cli" ]; then exit 0; fi
+        version=$(node -e 'process.stdout.write(require(process.argv[1]).inference.copilot.version)' "$policy")
+        sum=$(node -e 'process.stdout.write(require(process.argv[1]).inference.copilot.sha256)' "$policy")
+        model=$(node -e 'process.stdout.write(require(process.argv[1]).inference.model)' "$policy")
+        mkdir -p "$RUNNER_TEMP/copilot-bin"
+        curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
+          "https://github.com/github/copilot-cli/releases/download/v${version}/copilot-linux-x64.tar.gz" -o "$RUNNER_TEMP/copilot-bin/runtime.tar.gz"
+        echo "${sum}  $RUNNER_TEMP/copilot-bin/runtime.tar.gz" | sha256sum --check --strict
+        tar -xzf "$RUNNER_TEMP/copilot-bin/runtime.tar.gz" -C "$RUNNER_TEMP/copilot-bin"
+        node --input-type=module -e "const m=await import(process.argv[1]); console.log(await m.copilotSmoke({binary: process.argv[2], model: process.argv[3]}))" \
+          "$ENGINE/src/copilot-smoke.mjs" "$RUNNER_TEMP/copilot-bin/copilot" "$model"
+        echo "PR_REPAIR_COPILOT_BINARY=$RUNNER_TEMP/copilot-bin/copilot" >> "$GITHUB_ENV"
+
+    - name: Run pr-repair
+      id: run
+      shell: bash
+      env:
+        PR_REPAIR_MODE: ${{ inputs.mode }}
+        PR_REPAIR_TOKEN: ${{ inputs.token }}
+        PR_REPAIR_APPROVER_TOKEN: ${{ inputs.approver-token }}
+        PR_REPAIR_APP_ID: ${{ inputs.app-id }}
+        PR_REPAIR_APP_SLUG: ${{ inputs.app-slug }}
+        PR_REPAIR_ENABLED: ${{ inputs.enabled }}
+        PR_REPAIR_CREDENTIAL_READY: ${{ inputs.credential-ready }}
+        PR_REPAIR_EXCLUSIVE_ACTIVE: ${{ inputs.exclusive-active }}
+        PR_REPAIR_TASK: ${{ inputs.task }}
+        PR_REPAIR_API_KEY: ${{ inputs.api-key }}
+        PR_REPAIR_DRY_RUN: ${{ inputs.dry-run }}
+        PR_REPAIR_CANDIDATE: ${{ github.workspace }}/.pr-repair-candidate
+        PR_REPAIR_ROOT: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/src/main.mjs"
+
+    - name: Upload curated input
+      if: inputs.mode == 'prepare'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: pr-repair-input-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Upload model output
+      if: always() && inputs.mode == 'infer'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: pr-repair-proposal-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair/proposal.json
+        if-no-files-found: ignore
+        retention-days: 7
+
+    - name: Upload validation result
+      if: always() && inputs.mode == 'validate'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: pr-repair-validated-${{ fromJSON(inputs.task || '{}').nonce }}
+        path: ${{ runner.temp }}/pr-repair/validated/validated.json
+        if-no-files-found: ignore
+        retention-days: 7
