@@ -281,3 +281,19 @@ test("pr-repair holds off while a declared legacy workflow still has a run in fl
   const idle = await runPlan({ ...w.ctx, exclusiveWorkflows: ["dependabot-repair.yml"], now: NOW() });
   assert.equal(idle.tasks[0]?.kind, "sync", "work resumes once the legacy run has drained");
 });
+
+test("a runtime whose majors stay with a maintainer is reported, not repaired", async (t) => {
+  // Metriks: Dell runners preinstall Node; a Dockerfile update cannot move them.
+  const w = world((p) => ({ ...p, runtimes: p.runtimes.map((r) => (r.name === "node" ? { ...r, majors: "maintainer" } : r)) }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const pr = w.gh.pulls.get(167);
+  const tree = new Map(w.gh.commits.get(pr.head.sha).tree);
+  tree.set("apps/api/Dockerfile", dockerfile("node:25-bookworm-slim@sha256:" + "d".repeat(64), BUN_NEW));
+  pr.head.sha = w.gh.commit(tree, [w.main], "bump node", "dependabot[bot]");
+  pr.title = "fix: bump node from 24-bookworm-slim to 25-bookworm-slim";
+  w.ci(pr.head.sha, "failure");
+  const p = await runPlan(w.ctx);
+  assert.deepEqual(p.tasks, []);
+  assert.equal(p.rows[0].state, "unsupported-scope");
+  assert.match(p.rows[0].detail, /node 24 → 25 is a major runtime move; this repository keeps those with a maintainer/);
+});

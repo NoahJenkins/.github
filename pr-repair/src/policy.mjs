@@ -88,7 +88,8 @@ export function parsePolicy(raw) {
   for (const [i, r] of (Array.isArray(runtimes) ? runtimes : []).entries()) {
     const at = `runtimes[${i}]`;
     if (!isObj(r)) { e.push(`${at} must be an object`); continue; }
-    only(r, ["name", "image", "versionPattern", "versionFromImageEnv", "fields"], at, e);
+    only(r, ["name", "image", "versionPattern", "versionFromImageEnv", "majors", "fields"], at, e);
+    if (r.majors !== undefined && !["sync", "maintainer"].includes(r.majors)) e.push(`${at}.majors must be sync or maintainer`);
     if (r.versionFromImageEnv !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(r.versionFromImageEnv)) e.push(`${at}.versionFromImageEnv must be an environment variable name`);
     if (typeof r.name !== "string" || !/^[a-z0-9-]+$/.test(r.name)) e.push(`${at}.name must be a lowercase identifier`);
     if (typeof r.image !== "string" || !/^[a-z0-9._/-]+$/.test(r.image)) e.push(`${at}.image must be a Docker image name without a tag`);

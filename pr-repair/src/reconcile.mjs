@@ -265,6 +265,10 @@ export async function runPlan(ctx) {
       if (ctx.enabled && eligibility.eligible) {
         const req = await originalRequest(gh, repo, policy, ctx.baseSha, o.head.sha);
         s.original.moves = req.moves;
+        // Some runtimes live outside the repository too (for example a CI runner
+        // image); their major moves stay with a maintainer by policy.
+        const held = req.moves.find((m) => policy.runtimes.find((r) => r.name === m.runtime)?.majors === "maintainer" && m.from.major !== m.to.major);
+        if (held) s.original.eligibility = { eligible: false, reason: `${held.runtime} ${held.from.major} → ${held.to.major} is a major runtime move; this repository keeps those with a maintainer (runtimes[].majors).` };
         const rp = replacements.get(o.number);
         const mp = merged.get(o.number);
         if (mp) {
