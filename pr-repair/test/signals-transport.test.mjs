@@ -4,8 +4,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createServer } from "node:http";
 import { ciState, classifyThreads, reviewResult, REVIEW_CHECK } from "../src/signals.mjs";
-import { runOpenAI } from "../src/transport-openai.mjs";
-import { observe } from "../src/transport-copilot.mjs";
+import { runOpenAI, isVercelGateway } from "../src/transport-openai.mjs";
 import { emptyLedger } from "../src/ledger.mjs";
 import { sanitizeLog } from "../src/digest.mjs";
 import { validateReview } from "../src/bundle.mjs";
@@ -123,30 +122,15 @@ test("transport: refuses to run without endpoint, key, model, or budget", async 
   await assert.rejects(runOpenAI({ endpoint: "http://x", apiKey: "k", model: null, budget, kind: "repair", prompt: "", files }), (e) => e.category === "configuration");
 });
 
-// ---- Copilot CLI event stream parsing ----
-function child(lines) {
-  const c = new EventEmitter();
-  c.stdout = new PassThrough();
-  c.stderr = new PassThrough();
-  c.kill = () => {};
-  setImmediate(() => {
-    for (const l of lines) c.stdout.write(`${JSON.stringify(l)}\n`);
-    c.stdout.end();
-    setImmediate(() => c.emit("close", 0));
-  });
-  return c;
-}
-const sid = "12345678-1234-1234-1234-123456789012";
-
-test("copilot: a clean session yields the final answer", async () => {
-  const r = await observe(child([{ type: "model.call_start", data: { model: "m" } }, { type: "assistant.message", data: { model: "m", content: '{"files":[]}' } }, { type: "result", exitCode: 0, sessionId: sid }]), { model: "m", maxCalls: 2, timeoutMs: 2000 });
-  assert.equal(r.text, '{"files":[]}');
-});
-
-test("copilot: another model, a denied tool, or too many calls fail closed", async () => {
-  await assert.rejects(observe(child([{ type: "model.call_start", data: { model: "other" } }]), { model: "m", maxCalls: 2, timeoutMs: 2000 }), (e) => e.category === "model_mismatch");
-  await assert.rejects(observe(child([{ type: "model.call_start", data: { model: "m" } }, { type: "tool.execution_start", data: { toolName: "bash" } }]), { model: "m", maxCalls: 2, timeoutMs: 2000 }), (e) => e.category === "policy");
-  const many = Array.from({ length: 3 }, () => ({ type: "model.call_start", data: { model: "m" } }));
-  await assert.rejects(observe(child(many), { model: "m", maxCalls: 2, timeoutMs: 2000 }), (e) => e.category === "budget");
-  await assert.rejects(observe(child([{ type: "model.call_start", data: { model: "m" } }]), { model: "m", maxCalls: 2, timeoutMs: 2000 }), (e) => e.category === "malformed_output");
+test("transport: Vercel AI Gateway requests ask for prefix caching and record cache reads", async () => {
+  const f = await fake((n, b, res) => reply(res, 200, msg({ content: '{"files":[]}' }, "stop", { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 90 } })));
+  try {
+    const r = await call(f.endpoint, { gatewayCaching: true });
+    assert.deepEqual(f.seen[0].body.providerOptions, { gateway: { caching: "auto" } });
+    assert.equal(r.usage.cachedTokens, 90);
+    await call(f.endpoint);
+    assert.equal(f.seen[1].body.providerOptions, undefined, "other endpoints get the plain request");
+  } finally { f.close(); }
+  assert.equal(isVercelGateway("https://ai-gateway.vercel.sh/v1"), true);
+  assert.equal(isVercelGateway("https://ai-gateway.vercel.sh.evil.example/v1"), false);
 });

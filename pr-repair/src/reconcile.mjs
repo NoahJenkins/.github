@@ -300,7 +300,7 @@ export async function runPlan(ctx) {
           d.state = "waiting-ci";
           d.detail = "The task batch is full; deferred to the next run without reserving an attempt.";
         } else {
-          const res = reserve(ledger, { kind: d.action, root: o.number, target: target.number, head: target.head.sha, base: ctx.baseSha, rootHead: o.head.sha, transport: policy.inference.transport, model: policy.inference.model }, policy.repair.limits, ctx.now);
+          const res = reserve(ledger, { kind: d.action, root: o.number, target: target.number, head: target.head.sha, base: ctx.baseSha, rootHead: o.head.sha, transport: policy.inference.transport, model: policy.inference.model?.[d.action] ?? null }, policy.repair.limits, ctx.now);
           if (res.entry) {
             ledger = res.ledger;
             const feedback = ledger.entries.filter((e) => e.root === o.number && e.status === "failed").slice(-3).map((e) => ({ kind: e.kind, head: e.head, note: e.note, ...(e.feedback ?? {}) }));

@@ -1,7 +1,7 @@
 'use strict'
-// A read-only MCP service over curated task data. No shell, network, writes,
-// arbitrary paths, or credential reads. Ported unchanged from the repository
-// Copilot controllers (ark-builder-labs-site, noahjenkins.com-v2, RooferChat.com).
+// The model's only tool: a read-only view of curated task data. No shell,
+// network, writes, arbitrary paths, or credential reads. Ported from the
+// repository controllers (ark-builder-labs-site, noahjenkins.com-v2, RooferChat.com).
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline')
 const LIMIT=64*1024,MAX_CALLS=128,MAX_OUTPUT=2*1024*1024
 function load(root) {

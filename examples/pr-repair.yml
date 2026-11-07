@@ -51,7 +51,7 @@ jobs:
     steps:
       - id: check
         env:
-          KEY: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
         run: if [ -n "$KEY" ]; then echo ready=true; else echo ready=false; fi >> "$GITHUB_OUTPUT"
 
   plan:
@@ -131,7 +131,7 @@ jobs:
         with:
           mode: infer
           task: ${{ toJSON(matrix.task) }}
-          api-key: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          api-key: ${{ secrets.AI_GATEWAY_API_KEY }}
 
   validate:
     needs: [plan, infer]

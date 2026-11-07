@@ -36,7 +36,7 @@ export const rawPolicy = () => ({
     },
   ],
   validation: { image: "runtime:node", setup: "npm install --global pnpm@11.15.1", lockfile: { path: "pnpm-lock.yaml", command: "pnpm install --lockfile-only --ignore-scripts --ignore-pnpmfile" }, install: "pnpm install --frozen-lockfile", commands: ["pnpm typecheck", "pnpm test"] },
-  inference: { transport: "copilot-cli", model: "gpt-6-luna", copilot: { version: "1.0.103", sha256: "9".repeat(64), image: "node:24-bookworm-slim@sha256:" + "e".repeat(64) }, budget: { maxCalls: { repair: 24, review: 16 }, maxOutputTokens: 32000 } },
+  inference: { transport: "openai-compatible", endpoint: "https://ai-gateway.vercel.sh/v1", model: { repair: "openai/gpt-6-luna", review: "deepseek/deepseek-v4-flash" }, budget: { maxCalls: { repair: 24, review: 16 }, maxOutputTokens: 32000 } },
   review: { requireCodex: true, agentLogins: ["chatgpt-codex-connector[bot]"] },
   merge: { originals: true, approve: "approver-token", production: { kind: "workflow-run", workflow: "deploy-production.yml" } },
 });

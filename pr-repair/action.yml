@@ -43,7 +43,7 @@ inputs:
     required: false
     default: ""
   api-key:
-    description: infer only. The provider credential for the configured transport.
+    description: infer only. The provider credential (for example AI_GATEWAY_API_KEY).
     required: false
     default: ""
   dry-run:
@@ -101,28 +101,6 @@ runs:
         token: ${{ inputs.token }}
         persist-credentials: false
         path: .pr-repair-candidate
-
-    - name: Install the pinned Copilot CLI and verify it offline
-      if: inputs.mode == 'infer'
-      shell: bash
-      env:
-        ENGINE: ${{ github.action_path }}
-      run: |
-        set -euo pipefail
-        policy="$RUNNER_TEMP/pr-repair/policy.json"
-        transport=$(node -e 'const p=require(process.argv[1]);process.stdout.write(String(p.inference?.transport??""))' "$policy")
-        if [ "$transport" != "copilot-cli" ]; then exit 0; fi
-        version=$(node -e 'process.stdout.write(require(process.argv[1]).inference.copilot.version)' "$policy")
-        sum=$(node -e 'process.stdout.write(require(process.argv[1]).inference.copilot.sha256)' "$policy")
-        model=$(node -e 'process.stdout.write(require(process.argv[1]).inference.model)' "$policy")
-        mkdir -p "$RUNNER_TEMP/copilot-bin"
-        curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error \
-          "https://github.com/github/copilot-cli/releases/download/v${version}/copilot-linux-x64.tar.gz" -o "$RUNNER_TEMP/copilot-bin/runtime.tar.gz"
-        echo "${sum}  $RUNNER_TEMP/copilot-bin/runtime.tar.gz" | sha256sum --check --strict
-        tar -xzf "$RUNNER_TEMP/copilot-bin/runtime.tar.gz" -C "$RUNNER_TEMP/copilot-bin"
-        node --input-type=module -e "const m=await import(process.argv[1]); console.log(await m.copilotSmoke({binary: process.argv[2], model: process.argv[3]}))" \
-          "$ENGINE/src/copilot-smoke.mjs" "$RUNNER_TEMP/copilot-bin/copilot" "$model"
-        echo "PR_REPAIR_COPILOT_BINARY=$RUNNER_TEMP/copilot-bin/copilot" >> "$GITHUB_ENV"
 
     - name: Run pr-repair
       id: run

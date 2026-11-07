@@ -15,7 +15,6 @@ import { changeSet, fieldFilesAt, fileAt, originalRequest, treeAt } from "./repo
 import { findStateIssue, loadLedger, saveLedger } from "./reconcile.mjs";
 import { REVIEW_CHECK, failedJobIds } from "./signals.mjs";
 import { runOpenAI, TransportError } from "./transport-openai.mjs";
-import { runCopilot } from "./transport-copilot.mjs";
 
 export function checkTask(task, policy) {
   const keys = ["nonce", "kind", "root", "target", "head", "base", "rootHead", "policyDigest"];
@@ -88,13 +87,12 @@ export async function runInfer(ctx, task, dir) {
   const files = loadBundle(join(dir, "data"));
   const inf = policy.inference;
   const prompt = promptFor(task.kind, task);
-  const record = (fields) => writeJson(join(dir, "proposal.json"), seal({ task, bundleDigest: meta.bundleDigest, transport: inf.transport, model: inf.model, ...fields }));
+  const model = inf.model?.[task.kind];
+  const record = (fields) => writeJson(join(dir, "proposal.json"), seal({ task, bundleDigest: meta.bundleDigest, transport: inf.transport, model, ...fields }));
   try {
     let out;
     if (inf.transport === "openai-compatible") {
-      out = await runOpenAI({ endpoint: inf.endpoint, apiKey: env.PR_REPAIR_API_KEY, model: inf.model, budget: inf.budget, kind: task.kind, prompt, files, fetcher: ctx.fetcher });
-    } else if (inf.transport === "copilot-cli") {
-      out = await runCopilot({ binaryPath: env.PR_REPAIR_COPILOT_BINARY, apiKey: env.PR_REPAIR_API_KEY, model: inf.model, budget: inf.budget, kind: task.kind, prompt, dataRoot: join(dir, "data"), copilot: inf.copilot });
+      out = await runOpenAI({ endpoint: inf.endpoint, apiKey: env.PR_REPAIR_API_KEY, model, budget: inf.budget, kind: task.kind, prompt, files, fetcher: ctx.fetcher });
     } else throw new TransportError("configuration", "no inference transport configured");
     const result = task.kind === "review" ? validateReview(out.result, meta.changed).report : { files: validateProposalShape(out.result, policy.repair) };
     record({ usage: out.usage ?? null, result });

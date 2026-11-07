@@ -94,6 +94,6 @@ export async function selftest({ root, log }) {
   log(`runtime contract: ${policy.runtimes.length} runtime(s), ${problems.length ? `${problems.length} problem(s)` : "every required field holds the current value"}`);
   log(await fakeEndpointCheck());
   const gaps = inferenceGaps(policy, { credentialReady: true }).filter((g) => !g.includes("credential"));
-  log(gaps.length ? `activation: paid work stays paused until ${gaps.join("; ")}` : `activation: inference configured (${policy.inference.transport}, ${policy.inference.model})`);
+  log(gaps.length ? `activation: paid work stays paused until ${gaps.join("; ")}` : `activation: inference configured (${policy.inference.transport}; repair ${policy.inference.model.repair}, review ${policy.inference.model.review})`);
   if (problems.length) throw new Error("runtime contract does not hold at rest");
 }

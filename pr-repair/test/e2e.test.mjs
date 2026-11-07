@@ -99,7 +99,7 @@ test("#167: failed Bun patch -> trusted sync -> validated replacement -> review 
   assert.deepEqual(p2.tasks.map((x) => [x.kind, x.target]), [["review", pub.replacement]]);
   const reviewTask = p2.tasks[0];
   const files = w.gh.compare(w.main, replacement.head.sha).files.map((f) => f.filename);
-  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: reviewTask, transport: "copilot-cli", model: "gpt-6-luna", result: { verdict: "approve", summary: "Bun 1.4.4 and its declared fields agree.", coveredFiles: files, findings: [] } })));
+  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: reviewTask, transport: "openai-compatible", model: "deepseek/deepseek-v4-flash", result: { verdict: "approve", summary: "Bun 1.4.4 and its declared fields agree.", coveredFiles: files, findings: [] } })));
   const rev = await runPublish({ gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin }, reviewTask, { proposalDir: out, validatedDir: join(out, "validated") });
   assert.equal(rev.review, "approve");
   assert.ok(w.gh.checks.some((c) => c.name === REVIEW_CHECK && c.conclusion === "success" && c.head_sha === replacement.head.sha));
@@ -221,16 +221,18 @@ test("disabled automation reports status without writing", async (t) => {
 test("model repair: prepare -> infer over a fake endpoint -> admission rejects test weakening, accepts a source fix", async (t) => {
   const { createServer } = await import("node:http");
   const { runInfer, runPrepare } = await import("../src/tasks.mjs");
-  const w = world((p) => ({ ...p, runtimes: [], validation: { ...p.validation, image: NODE_OLD }, inference: { transport: "openai-compatible", model: "provider/model", endpoint: "https://gateway.invalid/v1", budget: { maxCalls: { repair: 4, review: 4 }, maxOutputTokens: 4000 } } }));
+  const w = world((p) => ({ ...p, runtimes: [], validation: { ...p.validation, image: NODE_OLD }, inference: { transport: "openai-compatible", model: { repair: "openai/gpt-6-luna", review: "deepseek/deepseek-v4-flash" }, endpoint: "https://gateway.invalid/v1", budget: { maxCalls: { repair: 4, review: 4 }, maxOutputTokens: 4000 } } }));
   t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
   const { tasks } = await runPlan(w.ctx);
   assert.deepEqual(tasks.map((x) => x.kind), ["repair"]);
   const task = tasks[0];
 
   let answer;
+  const models = [];
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
+    models.push(JSON.parse(body).model);
     const done = JSON.parse(body).messages.some((m) => m.role === "tool");
     const message = done ? { content: JSON.stringify(answer) } : { content: null, tool_calls: [{ id: "1", type: "function", function: { name: "read_data", arguments: '{"operation":"list"}' } }] };
     res.writeHead(200, { "content-type": "application/json" });
@@ -262,4 +264,7 @@ test("model repair: prepare -> infer over a fake endpoint -> admission rejects t
     assert.equal(v.passed, ok, (v.reasons ?? []).join("; "));
     if (!ok) assert.match(v.reasons.join(), /runtime\.test\.ts is protected/);
   }
+  assert.deepEqual([...new Set(models)], ["openai/gpt-6-luna"], "repairs use the repair model");
+  const entry = JSON.parse(w.gh.comments.find((c) => c.body.startsWith(MARKER)).body.slice(MARKER.length)).entries[0];
+  assert.equal(entry.model, "openai/gpt-6-luna", "the ledger records the model each attempt used");
 });

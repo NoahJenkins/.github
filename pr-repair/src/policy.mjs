@@ -31,7 +31,8 @@ export const ALWAYS_PROTECTED = [
 ];
 
 const ECOSYSTEMS = ["npm_and_yarn", "docker", "github_actions", "go_modules", "pip", "bundler", "cargo", "composer", "gradle", "maven", "nuget", "terraform"];
-const TRANSPORTS = ["copilot-cli", "openai-compatible"];
+const TRANSPORTS = ["openai-compatible"];
+const MODEL_ID = /^[\w./:-]{1,120}$/;
 const PRODUCTION_KINDS = ["none", "deployments", "workflow-run"];
 const APPROVALS = ["none", "app", "approver-token"];
 
@@ -125,17 +126,14 @@ export function parsePolicy(raw) {
   }
 
   const inf = raw.inference ?? {};
-  if (isObj(inf)) only(inf, ["transport", "model", "endpoint", "copilot", "budget"], "inference", e);
+  if (isObj(inf)) only(inf, ["transport", "model", "endpoint", "budget"], "inference", e);
   if (inf.transport != null && !TRANSPORTS.includes(inf.transport)) e.push(`inference.transport must be one of ${TRANSPORTS.join(", ")} or null`);
-  if (inf.model != null && (typeof inf.model !== "string" || !/^[\w./:-]{1,120}$/.test(inf.model))) e.push("inference.model must be a model id or null");
+  // One model for both kinds, or {repair, review} so a different model family reviews each repair.
+  if (inf.model != null && !(typeof inf.model === "string" && MODEL_ID.test(inf.model)) && !(isObj(inf.model) && Object.keys(inf.model).sort().join() === "repair,review" && Object.values(inf.model).every((m) => typeof m === "string" && MODEL_ID.test(m)))) {
+    e.push("inference.model must be a model id, {repair, review} model ids, or null");
+  }
   if (inf.transport === "openai-compatible" && inf.endpoint != null && !/^https:\/\/[a-z0-9.-]+(?::\d+)?(\/[\w./-]*)?$/.test(inf.endpoint)) {
     e.push("inference.endpoint must be an https base URL");
-  }
-  if (inf.transport === "copilot-cli" && inf.copilot != null) {
-    const c = inf.copilot;
-    if (!isObj(c) || !/^\d+\.\d+\.\d+$/.test(c.version ?? "") || !/^[0-9a-f]{64}$/.test(c.sha256 ?? "") || !digestPinned(c.image)) {
-      e.push("inference.copilot needs version, sha256, and a digest-pinned image");
-    }
   }
   if (inf.budget != null) {
     const b = inf.budget;
@@ -189,9 +187,8 @@ export function parsePolicy(raw) {
     validation: { timeoutMinutes: 20, memory: "6g", cpus: 2, setup: "", install: "", dockerBuilds: [], env: {}, ...v },
     inference: {
       transport: inf.transport ?? null,
-      model: inf.model ?? null,
+      model: inf.model == null ? null : typeof inf.model === "string" ? { repair: inf.model, review: inf.model } : { ...inf.model },
       endpoint: inf.endpoint ?? null,
-      copilot: inf.copilot ?? null,
       budget: inf.budget ?? null,
     },
     review: { requireCodex: rv.requireCodex === true, agentLogins: rv.agentLogins ?? [], originals: rv.originals === true },
@@ -215,7 +212,6 @@ export function inferenceGaps(policy, { credentialReady }) {
   if (!inf.model) gaps.push("inference.model is not set");
   if (!inf.budget) gaps.push("inference.budget is not set");
   if (inf.transport === "openai-compatible" && !inf.endpoint) gaps.push("inference.endpoint is not set");
-  if (inf.transport === "copilot-cli" && !inf.copilot) gaps.push("inference.copilot runtime pin is not set");
   if (!credentialReady) gaps.push("the inference credential is not available to the inference job");
   return gaps;
 }

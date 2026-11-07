@@ -128,11 +128,16 @@ trusted sync per head, 6 model tasks per UTC day.
 
 Provider and model are explicit policy values. Nothing defaults.
 
-- `copilot-cli`: the pinned GitHub Copilot CLI (`inference.copilot.version`,
-  `sha256`, `image`) in a read-only, capability-free container. It is verified
-  offline against a local fake model before each live session.
-- `openai-compatible`: chat completions at `inference.endpoint` (for example
-  Vercel AI Gateway, `https://ai-gateway.vercel.sh/v1`) with one read-only tool.
+The one transport, `openai-compatible`, calls chat completions at
+`inference.endpoint` (for example Vercel AI Gateway,
+`https://ai-gateway.vercel.sh/v1`) with one read-only tool over the curated
+data. On Vercel AI Gateway it asks for automatic prefix caching, because each
+tool round re-sends the growing conversation; cached reads are recorded in the
+usage. The model never runs anything; its final answer is parsed as data.
+
+`inference.model` is one model id, or `{"repair": "...", "review": "..."}` so a
+different model family reviews each repair. Each ledger reservation records the
+model it used.
 
 `inference.budget` caps model calls per task and output tokens. If the
 transport, model, budget, endpoint, or credential is missing, the plan reports
@@ -164,7 +169,7 @@ from the credential-only `preflight` job.
 | `runtimes[]` | Runtime contract (above). |
 | `validation.image` | Digest-pinned image, or `runtime:<name>` to validate on the requested runtime. |
 | `validation.setup`, `lockfile`, `install`, `commands`, `dockerBuilds`, `env` | Trusted setup (image build), lockfile regeneration, install, checks (`--network=none`), image builds, plain env. |
-| `inference.*` | Transport, model, endpoint, Copilot pin, budget. |
+| `inference.*` | Transport (`openai-compatible`), model (one id or `{repair, review}`), endpoint, budget. |
 | `review.requireCodex`, `agentLogins`, `originals` | Codex signoff, agent logins whose obsolete threads may be resolved, review for originals. |
 | `merge.originals` | Let pr-repair merge green originals (otherwise the existing workflow does). |
 | `merge.approve` | `none`, `app`, or `approver-token` (the caller passes the approver token to plan only). |

@@ -4,7 +4,7 @@
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { service } = require("../copilot/copilot-data.cjs");
+const { service } = require("./curated-data.cjs");
 
 const TOOL = {
   type: "function",
@@ -52,13 +52,23 @@ export function parseFinal(content) {
   }
 }
 
+// Vercel AI Gateway caches the repeated conversation prefix when asked; other
+// OpenAI-compatible endpoints get the plain request.
+export const isVercelGateway = (endpoint) => {
+  try {
+    return new URL(endpoint).hostname === "ai-gateway.vercel.sh";
+  } catch {
+    return false;
+  }
+};
+
 // files: Map(name -> content) of curated data. Returns {result, usage}.
-export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt, files, fetcher = fetch, timeoutMs = 15 * 60000 }) {
+export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt, files, fetcher = fetch, timeoutMs = 15 * 60000, gatewayCaching = isVercelGateway(endpoint) }) {
   if (!endpoint || !apiKey || !model || !budget) throw new TransportError("configuration", "endpoint, credential, model, and budget are all required");
   const maxCalls = budget.maxCalls[kind];
   const call = service(files);
   const deadline = Date.now() + timeoutMs;
-  const usage = { model, requests: 0, promptTokens: 0, completionTokens: 0, toolCalls: 0 };
+  const usage = { model, requests: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0, toolCalls: 0 };
   const messages = [
     { role: "system", content: prompt },
     { role: "user", content: "Read input.json first with read_data, then return the required JSON as your final answer." },
@@ -74,7 +84,7 @@ export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt,
       res = await fetcher(`${endpoint.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, tools: [TOOL], tool_choice: "auto", max_tokens: remaining, temperature: 0 }),
+        body: JSON.stringify({ model, messages, tools: [TOOL], tool_choice: "auto", max_tokens: remaining, ...(gatewayCaching ? { providerOptions: { gateway: { caching: "auto" } } } : {}) }),
         redirect: "error",
         signal: AbortSignal.timeout(Math.max(1000, Math.min(180000, deadline - Date.now()))),
       });
@@ -95,6 +105,7 @@ export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt,
     if (typeof data.model === "string") usage.providerModel = data.model.slice(0, 120);
     usage.promptTokens += Number(data.usage?.prompt_tokens) || 0;
     usage.completionTokens += Number(data.usage?.completion_tokens) || 0;
+    usage.cachedTokens += Number(data.usage?.prompt_tokens_details?.cached_tokens) || 0;
     if (budget.maxInputTokens && usage.promptTokens > budget.maxInputTokens) throw new TransportError("budget", "input token budget exhausted");
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     if (!toolCalls.length) {
