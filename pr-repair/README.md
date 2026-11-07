@@ -98,6 +98,11 @@ declared field and the candidate must have no field left on the old value.
 }
 ```
 
+Set `"majors": "maintainer"` on a runtime whose major versions also live
+outside the repository (for example preinstalled on a CI runner image): its
+major moves are reported as `unsupported-scope` for a maintainer, while minor
+and patch moves still sync.
+
 Placeholders: `{major}`, `{minor}` (major.minor), `{version}`, `{tag}`,
 `{imageRef}` (`image:tag@sha256:digest`). When a tag carries only a major
 (`node:25-bookworm-slim`) but the repository asserts an exact version, set
