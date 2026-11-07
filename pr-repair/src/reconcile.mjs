@@ -144,7 +144,7 @@ async function act(ctx, d, { o, r, target, reviewSha }) {
       return "refresh";
     case "rerun-ci": {
       const runs = await gh.paginate(`/repos/${repo}/actions/runs?head_sha=${pr.head.sha}&event=pull_request`, { key: "workflow_runs", max: 200 });
-      for (const run of runs.filter((x) => ["cancelled", "timed_out", "startup_failure"].includes(x.conclusion))) await gh.post(`/repos/${repo}/actions/runs/${run.id}/rerun-failed-jobs`);
+      for (const run of runs.filter((x) => ["failure", "cancelled", "timed_out", "startup_failure"].includes(x.conclusion))) await gh.post(`/repos/${repo}/actions/runs/${run.id}/rerun-failed-jobs`);
       return "rerun";
     }
     case "close-stale-replacement":
