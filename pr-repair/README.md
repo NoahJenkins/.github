@@ -161,6 +161,9 @@ from the credential-only `preflight` job.
    caller's equivalent variable) is `true`.
 5. Disable any other controller for the same pull requests first. The caller
    passes `exclusive-active: true` while one is enabled, and pr-repair holds off.
+   List its workflow files in `exclusive-workflows` as well: pr-repair then also
+   waits until none of them has a queued or running run, whatever concurrency
+   group they use, so a handoff or rollback never overlaps an in-flight run.
 
 ### Policy keys
 

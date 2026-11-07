@@ -208,6 +208,15 @@ export async function runPlan(ctx) {
   let ledger = await settleStale(ctx, state.ledger);
   if (ctx.enabled) ledger = await recoverReplacements(ctx, ledger);
   const production = await productionHealth(gh, repo, policy, ctx.baseSha);
+  // A handoff waits until every declared legacy workflow has drained, whatever
+  // concurrency group it uses, so two controllers never act at once.
+  let exclusiveDetail = null;
+  for (const wf of ctx.exclusiveWorkflows ?? []) {
+    for (const status of ["in_progress", "queued", "waiting", "pending", "requested"]) {
+      const runs = await gh.paginate(`/repos/${repo}/actions/workflows/${encodeURIComponent(wf)}/runs?status=${status}`, { key: "workflow_runs", max: 100 });
+      if (runs.length && !exclusiveDetail) exclusiveDetail = `${wf} run ${runs[0].id} is still ${status}; pr-repair acts once it has finished, so two controllers never act at once.`;
+    }
+  }
   // GitHub reports "behind" only when protection requires an up-to-date branch.
   const strict = true;
 
@@ -236,7 +245,8 @@ export async function runPlan(ctx) {
       const s = {
         policy,
         enabled: ctx.enabled,
-        exclusiveActive: ctx.exclusiveActive,
+        exclusiveActive: ctx.exclusiveActive || Boolean(exclusiveDetail),
+        exclusiveDetail,
         inferenceGaps: gaps,
         productionHealthy: production.healthy,
         productionReason: `Merges paused: ${production.reason}.`,

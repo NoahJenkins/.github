@@ -38,6 +38,10 @@ inputs:
     description: "plan: 'true' when another dependency controller is active; pr-repair then holds off."
     required: false
     default: "false"
+  exclusive-workflows:
+    description: "plan: comma-separated workflow files (for example a legacy controller) that must have no queued or running run before pr-repair acts."
+    required: false
+    default: ""
   task:
     description: One task from plan's tasks output (prepare, infer, validate, publish).
     required: false
@@ -114,6 +118,7 @@ runs:
         PR_REPAIR_ENABLED: ${{ inputs.enabled }}
         PR_REPAIR_CREDENTIAL_READY: ${{ inputs.credential-ready }}
         PR_REPAIR_EXCLUSIVE_ACTIVE: ${{ inputs.exclusive-active }}
+        PR_REPAIR_EXCLUSIVE_WORKFLOWS: ${{ inputs.exclusive-workflows }}
         PR_REPAIR_TASK: ${{ inputs.task }}
         PR_REPAIR_API_KEY: ${{ inputs.api-key }}
         PR_REPAIR_DRY_RUN: ${{ inputs.dry-run }}

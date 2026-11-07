@@ -66,6 +66,7 @@ async function main() {
       enabled: env.PR_REPAIR_ENABLED === "true",
       credentialReady: env.PR_REPAIR_CREDENTIAL_READY === "true",
       exclusiveActive: env.PR_REPAIR_EXCLUSIVE_ACTIVE === "true",
+      exclusiveWorkflows: (env.PR_REPAIR_EXCLUSIVE_WORKFLOWS || "").split(",").map((w) => w.trim()).filter((w) => /^[\w.-]+\.ya?ml$/.test(w)),
       now: new Date().toISOString(),
       runUrl,
       log,

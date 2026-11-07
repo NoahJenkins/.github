@@ -268,3 +268,16 @@ test("model repair: prepare -> infer over a fake endpoint -> admission rejects t
   const entry = JSON.parse(w.gh.comments.find((c) => c.body.startsWith(MARKER)).body.slice(MARKER.length)).entries[0];
   assert.equal(entry.model, "openai/gpt-6-luna", "the ledger records the model each attempt used");
 });
+
+test("pr-repair holds off while a declared legacy workflow still has a run in flight", async (t) => {
+  const w = world();
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  w.gh.workflowRuns = { "dependabot-repair.yml": [{ id: 99, status: "in_progress", html_url: "https://example.invalid/runs/99" }] };
+  const busy = await runPlan({ ...w.ctx, exclusiveWorkflows: ["dependabot-repair.yml"] });
+  assert.deepEqual(busy.tasks, []);
+  assert.equal(busy.rows[0].state, "missing-configuration");
+  assert.match(busy.rows[0].detail, /dependabot-repair\.yml run 99 is still in_progress/);
+  w.gh.workflowRuns = { "dependabot-repair.yml": [] };
+  const idle = await runPlan({ ...w.ctx, exclusiveWorkflows: ["dependabot-repair.yml"], now: NOW() });
+  assert.equal(idle.tasks[0]?.kind, "sync", "work resumes once the legacy run has drained");
+});
