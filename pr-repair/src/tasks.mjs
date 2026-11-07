@@ -50,9 +50,17 @@ export async function runPrepare(ctx, task, outDir) {
     base[c.path] = (await fileAt(gh, repo, c.path, task.base)) ?? "";
     head[c.path] = c.after ?? "";
   }
+  // Context is optional reading for the model: binary files (icons, images,
+  // fonts) are skipped. Changed files are never skipped; they fail closed above.
+  const BINARY = /\.(?:ico|png|jpe?g|gif|webp|avif|bmp|tiff?|svgz|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|br|wasm|mp[34]|mov|webm|wav|ogg|db|sqlite)$/i;
   const context = {};
-  for (const e of (await treeAt(gh, repo, task.head)).filter((x) => matchesAny(x.path, policy.repair.context) && !matchesAny(x.path, policy.repair.protected) && !changed.includes(x.path) && x.size <= 256 * 1024).slice(0, 48)) {
-    context[e.path] = await fileAt(gh, repo, e.path, task.head);
+  for (const e of (await treeAt(gh, repo, task.head)).filter((x) => matchesAny(x.path, policy.repair.context) && !matchesAny(x.path, policy.repair.protected) && !changed.includes(x.path) && !BINARY.test(x.path) && x.size <= 256 * 1024)) {
+    if (Object.keys(context).length >= 48) break;
+    try {
+      context[e.path] = await fileAt(gh, repo, e.path, task.head);
+    } catch (err) {
+      if (!/is not UTF-8/.test(err.message)) throw err;
+    }
   }
   const evidence = {};
   if (task.kind === "repair") {

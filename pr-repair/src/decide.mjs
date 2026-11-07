@@ -84,6 +84,11 @@ export function decide(s) {
   }
 
   const findings = r?.review?.verdict === "fail" || r?.codex === "findings";
+  // A failure must reproduce on a fresh run before any paid repair: stale runs
+  // and infrastructure timeouts (ark #180) cost a free re-run, not an attempt.
+  if (ci.state === "failure" && !findings && !s.marks.rerun) {
+    return out("waiting-ci", "rerun-ci", `${label} failed ${ci.failed.join(", ")}; re-running the failed checks once to confirm before paid repair.`);
+  }
   if (ci.state === "failure" || findings) {
     const why = ci.state === "failure" ? `failed ${ci.failed.join(", ")}` : "blocking review findings";
     if (usage.repair >= limits.repairPerPr) return out("exhausted", "none", `${label} ${why}; repair budget used (${usage.repair}/${limits.repairPerPr}).`);

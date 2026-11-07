@@ -46,7 +46,8 @@ export class FakeGitHub {
       const t = this.commits.get(query.ref)?.tree;
       const path2 = decodeURIComponent(m[1]);
       if (!t?.has(path2)) throw Object.assign(new Error("404"), { status: 404 });
-      return { type: "file", content: Buffer.from(t.get(path2)).toString("base64") };
+      const v = t.get(path2);
+      return { type: "file", content: (Buffer.isBuffer(v) ? v : Buffer.from(v)).toString("base64") };
     }
     if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: "100644", size: c.length })) };
     if ((m = p.match(new RegExp(`^${r}/issues/comments/(\\d+)$`)))) return structuredClone(this.comments.find((c) => c.id === Number(m[1])));
@@ -69,6 +70,7 @@ export class FakeGitHub {
       return this.workflowRuns[decodeURIComponent(m[1])].filter((x) => !query.status || x.status === query.status);
     }
     if (p.startsWith(`${r}/actions/workflows/`)) return this.runs;
+    if (p === `${r}/actions/runs`) return [{ id: 555, head_sha: query.head_sha, conclusion: "failure" }];
     throw new Error(`fake paginate not implemented: ${path}`);
   }
   prCommits(n) {
@@ -100,6 +102,7 @@ export class FakeGitHub {
       return c;
     }
     if (path === `${r}/labels`) return {};
+    if (path.match(/\/actions\/runs\/\d+\/rerun-failed-jobs$/)) return null;
     if (path.match(/\/pulls\/\d+\/reviews$/)) return { id: this.id() };
     if (path === `${r}/issues`) {
       const i = { number: this.id(), state: "open", user: { id: this.botId }, body: body.body, labels: body.labels };

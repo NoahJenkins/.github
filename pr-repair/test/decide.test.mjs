@@ -63,8 +63,14 @@ test("runtime sync runs before any model work, once per head", () => {
   assert.equal(decide({ ...s, usage: use({ syncFor: () => 1 }) }).state, "exhausted");
 });
 
-test("failed CI reserves a bounded repair, then exhausts", () => {
+test("a failure is re-run once before any paid repair (ark canary: stale infrastructure timeout)", () => {
   const s = snap({ original: { ...snap().original, ci: red } });
+  assert.deepEqual([decide(s).state, decide(s).action], ["waiting-ci", "rerun-ci"]);
+  assert.equal(decide({ ...s, marks: { rerun: true } }).action, "repair", "a reproduced failure gets its repair");
+});
+
+test("failed CI reserves a bounded repair, then exhausts", () => {
+  const s = snap({ marks: { rerun: true }, original: { ...snap().original, ci: red } });
   assert.deepEqual([decide(s).state, decide(s).action], ["repairing", "repair"]);
   const done = decide({ ...s, usage: use({ repair: 2 }) });
   assert.deepEqual([done.state, done.action], ["exhausted", "none"]);
@@ -72,7 +78,7 @@ test("failed CI reserves a bounded repair, then exhausts", () => {
 });
 
 test("missing configuration pauses repair before any reservation", () => {
-  const d = decide(snap({ original: { ...snap().original, ci: red }, inferenceGaps: ["inference.model is not set"] }));
+  const d = decide(snap({ marks: { rerun: true }, original: { ...snap().original, ci: red }, inferenceGaps: ["inference.model is not set"] }));
   assert.deepEqual([d.state, d.action], ["missing-configuration", "none"]);
   assert.match(d.detail, /inference\.model is not set/);
 });
@@ -97,7 +103,7 @@ test("conflicts ask the update bot to rebase once, and only with an account it o
 test("a behind original is evaluated, not re-requested every run", () => {
   const behind = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "behind" }), ci: red };
   // Without an account Dependabot obeys, the failing head still gets its bounded repair.
-  assert.equal(decide(snap({ original: behind })).action, "repair");
+  assert.equal(decide(snap({ original: behind, marks: { rerun: true } })).action, "repair");
   // Where pr-repair merges originals and can ask, it asks once per head, then waits.
   const asks = snap({ canAskRebase: true, original: { ...behind, ci: green } });
   assert.equal(decide(asks).action, "request-rebase");
@@ -122,7 +128,7 @@ test("a replacement needs a fresh independent review for its exact head and base
   assert.equal(oldBase.action, "review");
 });
 
-test("blocking review findings re-enter repair", () => {
+test("blocking review findings re-enter repair without a CI re-run", () => {
   assert.equal(decide(snap({ replacement: replacement({ review: { verdict: "fail", head: H("2"), base: H("b") } }), targetHead: H("2") })).action, "repair");
   assert.equal(decide(snap({ replacement: replacement({ codex: "findings" }), targetHead: H("2") })).action, "repair");
 });

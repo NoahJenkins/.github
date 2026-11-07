@@ -202,11 +202,13 @@ test("missing configuration pauses visibly before reserving anything", async (t)
 test("model repair pauses on missing model, credential, or budget without a reservation", async (t) => {
   const w = world((p) => ({ ...p, runtimes: [], inference: { transport: "openai-compatible", model: null } }));
   t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
-  const p = await runPlan({ ...w.ctx, credentialReady: false });
+  const first = await runPlan({ ...w.ctx, credentialReady: false });
+  assert.equal(first.rows[0].state, "waiting-ci", "the failure is re-run once first");
+  const p = await runPlan({ ...w.ctx, credentialReady: false, now: NOW() });
   assert.deepEqual(p.tasks, []);
   assert.equal(p.rows[0].state, "missing-configuration");
   assert.match(p.rows[0].detail, /inference\.model is not set.*credential/);
-  assert.equal(w.gh.comments.filter((c) => c.body.startsWith(MARKER)).length, 0, "no attempt was reserved");
+  assert.deepEqual(ledgerOf(w.gh).entries, [], "no attempt was reserved (only the re-run mark is recorded)");
   assert.ok(w.gh.checks.some((c) => c.name === STATUS_CHECK && c.conclusion === "action_required"));
 });
 
@@ -223,7 +225,9 @@ test("model repair: prepare -> infer over a fake endpoint -> admission rejects t
   const { runInfer, runPrepare } = await import("../src/tasks.mjs");
   const w = world((p) => ({ ...p, runtimes: [], validation: { ...p.validation, image: NODE_OLD }, inference: { transport: "openai-compatible", model: { repair: "openai/gpt-6-luna", review: "deepseek/deepseek-v4-flash" }, endpoint: "https://gateway.invalid/v1", budget: { maxCalls: { repair: 4, review: 4 }, maxOutputTokens: 4000 } } }));
   t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
-  const { tasks } = await runPlan(w.ctx);
+  assert.deepEqual((await runPlan(w.ctx)).tasks, [], "first the failed checks are re-run");
+  assert.ok(w.gh.writes.some((x) => x.path.endsWith("/actions/runs/555/rerun-failed-jobs")), "the failed run was re-run");
+  const { tasks } = await runPlan({ ...w.ctx, now: NOW() });
   assert.deepEqual(tasks.map((x) => x.kind), ["repair"]);
   const task = tasks[0];
 
@@ -296,4 +300,28 @@ test("a runtime whose majors stay with a maintainer is reported, not repaired", 
   assert.deepEqual(p.tasks, []);
   assert.equal(p.rows[0].state, "unsupported-scope");
   assert.match(p.rows[0].detail, /node 24 → 25 is a major runtime move; this repository keeps those with a maintainer/);
+});
+
+test("prepare skips binary context files instead of failing the attempt (ark canary)", async (t) => {
+  const { runPrepare } = await import("../src/tasks.mjs");
+  const w = world((p) => ({ ...p, runtimes: [], validation: { ...p.validation, image: NODE_OLD }, repair: { ...p.repair, context: ["apps/api/src/**"] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const pr = w.gh.pulls.get(167);
+  // Unchanged context on both sides, like ark's src/app/favicon.ico.
+  const ico = Buffer.from([0, 0, 1, 0, 0xff, 0xfe, 0x89]);
+  const bin = Buffer.from([0xff, 0xfe, 0xfd]);
+  for (const sha of [w.main, pr.head.sha]) {
+    w.gh.commits.get(sha).tree.set("apps/api/src/favicon.ico", ico);
+    w.gh.commits.get(sha).tree.set("apps/api/src/logo.bin", bin);
+    w.gh.commits.get(sha).tree.set("apps/api/src/index.ts", "export const app = 1;\n");
+  }
+  await runPlan(w.ctx);
+  const { tasks } = await runPlan({ ...w.ctx, now: NOW() });
+  const dir = mkdtempSync(join(tmpdir(), "pr-repair-binary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  await runPrepare({ gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId }, tasks.find((x) => x.kind === "repair"), dir);
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(join(dir, "data/context/apps/api/src/index.ts")), true);
+  assert.equal(existsSync(join(dir, "data/context/apps/api/src/favicon.ico")), false, "binary by extension");
+  assert.equal(existsSync(join(dir, "data/context/apps/api/src/logo.bin")), false, "binary by content");
 });
