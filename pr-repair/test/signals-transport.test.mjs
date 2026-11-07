@@ -1,0 +1,136 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { createServer } from "node:http";
+import { ciState, classifyThreads, reviewResult, REVIEW_CHECK } from "../src/signals.mjs";
+import { runOpenAI, isVercelGateway } from "../src/transport-openai.mjs";
+import { emptyLedger } from "../src/ledger.mjs";
+import { sanitizeLog } from "../src/digest.mjs";
+import { validateReview } from "../src/bundle.mjs";
+
+const H = (c) => c.repeat(40);
+
+test("required checks: failure beats pending; wrong app does not count", () => {
+  const run = (id, name, conclusion, app = 15368) => ({ id, name, status: conclusion ? "completed" : "in_progress", conclusion, app: { id: app } });
+  assert.equal(ciState([run(1, "verify", "success"), run(2, "e2e", null)], ["verify", "e2e"], 15368).state, "pending");
+  assert.equal(ciState([run(1, "verify", "failure"), run(2, "e2e", null)], ["verify", "e2e"], 15368).state, "failure");
+  assert.equal(ciState([run(1, "verify", "success", 999)], ["verify"], 15368).state, "pending", "a check from another app is not evidence");
+  assert.equal(ciState([run(1, "verify", "cancelled")], ["verify"], 15368).state, "interrupted");
+  assert.equal(ciState([run(1, "verify", "failure"), run(2, "verify", "success")], ["verify"], 15368).state, "success", "latest run wins");
+});
+
+test("only all-agent threads from earlier heads are obsolete", () => {
+  const t = (id, comments, total = comments.length) => ({ id, comments: { totalCount: total, nodes: comments.map(([login, oid]) => ({ author: { login }, originalCommit: { oid } })) } });
+  const r = classifyThreads(
+    [t("old-agent", [["chatgpt-codex-connector", H("1")]]), t("current-agent", [["chatgpt-codex-connector", H("2")]]), t("human", [["NoahJenkins", H("1")]]), t("mixed", [["chatgpt-codex-connector", H("1")], ["NoahJenkins", H("1")]]), t("truncated", [["chatgpt-codex-connector", H("1")]], 60)],
+    { agentLogins: ["chatgpt-codex-connector[bot]"], head: H("2") },
+  );
+  assert.deepEqual(r.obsolete, ["old-agent"]);
+  assert.deepEqual(r.blocking, ["current-agent", "human", "mixed", "truncated"]);
+});
+
+test("a review check counts only when bound to a published ledger reservation", () => {
+  const nonce = "11111111-1111-1111-1111-111111111111";
+  const check = { name: REVIEW_CHECK, app: { id: 7 }, head_sha: H("2"), status: "completed", conclusion: "success", id: 1, output: { text: JSON.stringify({ nonce, head: H("2"), base: H("b"), verdict: "approve" }) } };
+  const ledger = { ...emptyLedger(), entries: [{ nonce, kind: "review", status: "published", head: H("2"), base: H("b"), root: 1, target: 2, rootHead: H("1"), createdAt: "2026-11-07T00:00:00.000Z" }] };
+  assert.equal(reviewResult([check], { appId: 7, head: H("2"), ledger }).verdict, "pass");
+  assert.equal(reviewResult([check], { appId: 7, head: H("2"), ledger: emptyLedger() }), null, "a fabricated review without a reservation is ignored");
+  assert.equal(reviewResult([{ ...check, app: { id: 8 } }], { appId: 7, head: H("2"), ledger }), null, "another app cannot sign off");
+});
+
+test("review reports must cover every changed file", () => {
+  const ok = { verdict: "approve", summary: "fine", coveredFiles: ["a", "b"], findings: [] };
+  assert.equal(validateReview(ok, ["b", "a"]).passed, true);
+  assert.throws(() => validateReview({ ...ok, coveredFiles: ["a"] }, ["a", "b"]), /cover exactly/);
+  assert.equal(validateReview({ ...ok, findings: [{ severity: "medium", file: "a", message: "x" }] }, ["a", "b"]).passed, false);
+  assert.throws(() => validateReview({ ...ok, findings: [{ severity: "medium", file: "elsewhere", message: "x" }] }, ["a", "b"]));
+});
+
+test("logs are sanitized before a model sees them", () => {
+  const out = sanitizeLog("2026-01-01T00:00:00Z ::add-mask::x\n\x1b[31mError: token ghp_abcdefghijklmnopqrstuvwxyz123456 leaked\nok");
+  assert.doesNotMatch(out, /ghp_|add-mask|\x1b/);
+  assert.match(out, /\[redacted\]/);
+});
+
+// ---- OpenAI-compatible transport against a local fake endpoint ----
+async function fake(handler) {
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    seen.push({ headers: req.headers, body: JSON.parse(body) });
+    handler(seen.length, JSON.parse(body), res);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { endpoint: `http://127.0.0.1:${server.address().port}/v1`, seen, close: () => server.close() };
+}
+const reply = (res, status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(typeof body === "string" ? body : JSON.stringify(body)); };
+const msg = (message, finish = "stop", usage = { prompt_tokens: 10, completion_tokens: 5 }) => ({ choices: [{ message, finish_reason: finish }], usage });
+const budget = { maxCalls: { repair: 3, review: 3 }, maxOutputTokens: 100 };
+const files = new Map([["input.json", '{"x":1}']]);
+const call = (endpoint, extra = {}) => runOpenAI({ endpoint, apiKey: "k", model: "provider/model", budget, kind: "repair", prompt: "p", files, ...extra });
+
+test("transport: tool loop then JSON answer; sends only the configured model and key", async () => {
+  const f = await fake((n, body, res) => reply(res, 200, n === 1 ? msg({ content: null, tool_calls: [{ id: "1", type: "function", function: { name: "read_data", arguments: '{"operation":"read","file":"input.json"}' } }] }, "tool_calls") : msg({ content: '```json\n{"files":[]}\n```' })));
+  try {
+    const r = await call(f.endpoint);
+    assert.deepEqual(r.result, { files: [] });
+    assert.equal(f.seen[0].body.model, "provider/model");
+    assert.equal(f.seen[0].headers.authorization, "Bearer k");
+    assert.equal(JSON.parse(f.seen[1].body.messages.at(-1).content).content, '{"x":1}');
+  } finally { f.close(); }
+});
+
+for (const [name, status, category] of [["auth", 401, "authentication"], ["quota", 402, "quota"], ["rate", 429, "rate_limit"], ["outage", 503, "provider_unavailable"], ["model", 404, "model_not_found"]]) {
+  test(`transport: HTTP ${status} is a typed ${name} failure`, async () => {
+    const f = await fake((n, b, res) => reply(res, status, {}));
+    try {
+      await assert.rejects(call(f.endpoint), (e) => e.category === category);
+      assert.equal(f.seen.length, 1, "paid calls are never retried silently");
+    } finally { f.close(); }
+  });
+}
+
+test("transport: malformed responses and answers fail closed", async () => {
+  for (const [body, category] of [["not json", "malformed_response"], [{ choices: [] }, "malformed_response"], [msg({ content: "I fixed it!" }), "malformed_output"], [msg({ content: '{"files":[' }, "length"), "budget"]]) {
+    const f = await fake((n, b, res) => reply(res, 200, body));
+    try {
+      await assert.rejects(call(f.endpoint), (e) => e.category === category, JSON.stringify(body));
+    } finally { f.close(); }
+  }
+});
+
+test("transport: call, token, and time budgets stop the loop", async () => {
+  const loop = await fake((n, b, res) => reply(res, 200, msg({ content: null, tool_calls: [{ id: String(n), type: "function", function: { name: "read_data", arguments: '{"operation":"list"}' } }] }, "tool_calls")));
+  try {
+    await assert.rejects(call(loop.endpoint), (e) => e.category === "budget" && /call limit 3/.test(e.message));
+    assert.equal(loop.seen.length, 3);
+  } finally { loop.close(); }
+  const greedy = await fake((n, b, res) => reply(res, 200, msg({ content: null, tool_calls: [{ id: "1", type: "function", function: { name: "read_data", arguments: '{"operation":"list"}' } }] }, "tool_calls", { prompt_tokens: 1, completion_tokens: 100 })));
+  try {
+    await assert.rejects(call(greedy.endpoint), (e) => e.category === "budget" && /output token/.test(e.message));
+  } finally { greedy.close(); }
+  const slow = await fake(() => {});
+  try {
+    await assert.rejects(call(slow.endpoint, { timeoutMs: 300 }), (e) => e.category === "timeout");
+  } finally { slow.close(); }
+});
+
+test("transport: refuses to run without endpoint, key, model, or budget", async () => {
+  await assert.rejects(runOpenAI({ endpoint: "http://x", apiKey: "", model: "m", budget, kind: "repair", prompt: "", files }), (e) => e.category === "configuration");
+  await assert.rejects(runOpenAI({ endpoint: "http://x", apiKey: "k", model: null, budget, kind: "repair", prompt: "", files }), (e) => e.category === "configuration");
+});
+
+test("transport: Vercel AI Gateway requests ask for prefix caching and record cache reads", async () => {
+  const f = await fake((n, b, res) => reply(res, 200, msg({ content: '{"files":[]}' }, "stop", { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 90 } })));
+  try {
+    const r = await call(f.endpoint, { gatewayCaching: true });
+    assert.deepEqual(f.seen[0].body.providerOptions, { gateway: { caching: "auto" } });
+    assert.equal(r.usage.cachedTokens, 90);
+    await call(f.endpoint);
+    assert.equal(f.seen[1].body.providerOptions, undefined, "other endpoints get the plain request");
+  } finally { f.close(); }
+  assert.equal(isVercelGateway("https://ai-gateway.vercel.sh/v1"), true);
+  assert.equal(isVercelGateway("https://ai-gateway.vercel.sh.evil.example/v1"), false);
+});

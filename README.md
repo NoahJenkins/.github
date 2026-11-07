@@ -2,6 +2,11 @@
 
 Shared GitHub automation for personal repositories.
 
+| Component | Use | Pin |
+| --- | --- | --- |
+| [`review-gate`](#review-gate) | Risk-tiered review status for agent pull requests | `NoahJenkins/.github@<sha>` |
+| [`pr-repair`](pr-repair/README.md) | Bounded repair, independent review, and native merge for dependency updates | `NoahJenkins/.github/pr-repair@<sha>` |
+
 ## review-gate
 
 A composite action that posts the required `review-gate` commit status, so
