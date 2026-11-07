@@ -13,9 +13,14 @@ export function ecosystemOf(branch) {
   return m ? m[1] : null;
 }
 
+// Reads only the title and Dependabot's own "Bumps ..."/"Updates ..." sentences;
+// release notes quoted in the body are not evidence. Sentence punctuation after
+// a version ("to 7.0.153.") is not part of it.
 export function updateKind({ title = "", body = "" }) {
-  const text = `${title}\n${String(body).split("\n").slice(0, 120).join("\n")}`;
-  const kinds = [...text.matchAll(BUMP_RE)].map((m) => bumpKind(m[1], m[2]));
+  const own = String(body).split("\n").slice(0, 200).filter((l) => /^\s*(?:[-*]\s*)?(?:Bumps|Updates)\b/.test(l));
+  const text = [title, ...own].join("\n");
+  const trim = (v) => v.replace(/[.,;:)\]]+$/, "");
+  const kinds = [...text.matchAll(BUMP_RE)].map((m) => bumpKind(trim(m[1]), trim(m[2])));
   if (!kinds.length || kinds.includes("unknown")) return "unknown";
   return kinds.includes("major") ? "major" : "non-major";
 }

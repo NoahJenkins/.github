@@ -139,6 +139,9 @@ test("a stale or foreign replacement is not trusted", () => {
 test("update kind and eligibility read Dependabot's own text", () => {
   assert.equal(updateKind({ title: "bump node from 24-bookworm-slim to 25-bookworm-slim" }), "major");
   assert.equal(updateKind({ title: "bump oven/bun from 1.4.0-slim to 1.4.4-slim" }), "non-major");
+  // RooferChat #104: the body sentence ends with a period after the version.
+  assert.equal(updateKind({ title: "chore(deps): bump ai from 6.0.238 to 7.0.153", body: "Bumps [ai](https://x) from 6.0.238 to 7.0.153.\n<p>Streams audio from 3 sources to 2 sinks</p>" }), "major");
+  assert.equal(updateKind({ title: "bump the aws-sdk group with 2 updates", body: "Updates `@aws-sdk/client-s3` from 3.1.0 to 3.2.0\nUpdates `@aws-sdk/s3-request-presigner` from 3.1.0 to 3.2.0" }), "non-major");
   const p = policy((r) => ({ ...r, eligibility: { updates: { npm_and_yarn: "non-major", docker: "all" } } }));
   const base = { state: "open", draft: false, user: { login: "dependabot[bot]", type: "Bot" }, head: { ref: "dependabot/npm_and_yarn/ai-7", repo: { full_name: "o/r" } }, base: { ref: "main" }, changed_files: 2, body: "" };
   const commits = [{ author: { login: "dependabot[bot]" }, commit: { verification: { verified: true } } }];

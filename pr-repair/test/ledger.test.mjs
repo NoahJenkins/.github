@@ -92,3 +92,8 @@ test("policy rejects human authors, unknown keys, and credential-looking validat
   assert.throws(() => parsePolicy({ ...rawPolicy(), validation: { ...rawPolicy().validation, image: "node:24" } }), /digest-pinned/);
   assert.throws(() => parsePolicy({ ...rawPolicy(), review: { agentLogins: ["someone"] } }), /human threads/);
 });
+
+test("deployment interlocks accept real GitHub account ids", () => {
+  const p = parsePolicy({ ...rawPolicy(), merge: { production: { kind: "deployments", environment: "production", creatorId: 41898282 } } });
+  assert.equal(p.merge.production.creatorId, 41898282);
+});

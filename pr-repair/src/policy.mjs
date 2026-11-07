@@ -156,7 +156,7 @@ export function parsePolicy(raw) {
   if (m.approve !== undefined && !APPROVALS.includes(m.approve)) e.push(`merge.approve must be one of ${APPROVALS.join(", ")}`);
   const prod = m.production ?? { kind: "none" };
   if (!isObj(prod) || !PRODUCTION_KINDS.includes(prod.kind)) e.push(`merge.production.kind must be one of ${PRODUCTION_KINDS.join(", ")}`);
-  else if (prod.kind === "deployments" && (typeof prod.environment !== "string" || !posInt(prod.creatorId ?? 1))) e.push("merge.production deployments needs environment");
+  else if (prod.kind === "deployments" && (typeof prod.environment !== "string" || !posInt(prod.creatorId ?? 1, Number.MAX_SAFE_INTEGER))) e.push("merge.production deployments needs environment and an optional numeric creatorId");
   else if (prod.kind === "workflow-run" && typeof prod.workflow !== "string") e.push("merge.production workflow-run needs workflow");
 
   const lg = raw.legacy ?? {};
