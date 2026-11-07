@@ -134,8 +134,9 @@ async function act(ctx, d, { o, r, target, reviewSha }) {
   };
   switch (d.action) {
     case "request-rebase":
+      if (!ctx.approverGh) throw new Error("only an account with push access can ask Dependabot to rebase");
       await fresh(o.number, o.head.sha);
-      await gh.post(`/repos/${repo}/issues/${o.number}/comments`, { body: "@dependabot rebase\n\n<sub>Requested once for this head by pr-repair.</sub>" });
+      await ctx.approverGh.post(`/repos/${repo}/issues/${o.number}/comments`, { body: "@dependabot rebase\n\n<sub>Requested once for this head by pr-repair.</sub>" });
       return "rebase";
     case "refresh":
       await fresh(pr.number, pr.head.sha);
@@ -240,6 +241,7 @@ export async function runPlan(ctx) {
         productionHealthy: production.healthy,
         productionReason: `Merges paused: ${production.reason}.`,
         strict,
+        canAskRebase: Boolean(ctx.approverGh),
         botLogin: ctx.botLogin,
         baseSha: ctx.baseSha,
         limits: policy.repair.limits,

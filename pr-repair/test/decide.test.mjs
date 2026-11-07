@@ -84,10 +84,28 @@ test("pending and interrupted CI wait or retry once", () => {
   assert.equal(decide({ ...s, marks: { rerun: true } }).state, "needs-human");
 });
 
-test("conflicts ask the update bot to rebase once", () => {
-  const s = snap({ original: { ...snap().original, pr: pr(167, H("1"), { mergeable_state: "dirty" }) } });
+test("conflicts ask the update bot to rebase once, and only with an account it obeys", () => {
+  const s = snap({ canAskRebase: true, original: { ...snap().original, pr: pr(167, H("1"), { mergeable_state: "dirty" }) } });
   assert.equal(decide(s).action, "request-rebase");
   assert.deepEqual([decide({ ...s, marks: { rebase: true } }).state, decide({ ...s, marks: { rebase: true } }).action], ["conflict", "none"]);
+  // ark canary: Dependabot ignores "@dependabot rebase" from an App ("only users with push access").
+  const app = decide({ ...s, canAskRebase: false });
+  assert.deepEqual([app.state, app.action], ["conflict", "none"]);
+  assert.match(app.detail, /Dependabot rebases conflicting updates on its own/);
+});
+
+test("a behind original is evaluated, not re-requested every run", () => {
+  const behind = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "behind" }), ci: red };
+  // Without an account Dependabot obeys, the failing head still gets its bounded repair.
+  assert.equal(decide(snap({ original: behind })).action, "repair");
+  // Where pr-repair merges originals and can ask, it asks once per head, then waits.
+  const asks = snap({ canAskRebase: true, original: { ...behind, ci: green } });
+  assert.equal(decide(asks).action, "request-rebase");
+  assert.notEqual(decide({ ...asks, marks: { rebase: true } }).action, "request-rebase");
+  // A replacement refreshes its own branch once per head.
+  const r = replacement({ pr: { ...replacement().pr, mergeable_state: "behind" } });
+  assert.equal(decide(snap({ replacement: r, targetHead: H("2") })).action, "refresh");
+  assert.notEqual(decide(snap({ replacement: r, targetHead: H("2"), marks: { refresh: true } })).action, "refresh");
 });
 
 test("a green original follows the repository's existing merge path unless policy grants it", () => {

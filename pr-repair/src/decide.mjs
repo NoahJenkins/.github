@@ -53,13 +53,21 @@ export function decide(s) {
     return out(inflight.kind === "review" ? "reviewing" : "repairing", "none", `Attempt ${inflight.nonce.slice(0, 8)} (${inflight.kind}) is ${inflight.status}; waiting for it to publish or expire.`);
   }
 
+  // Dependabot obeys "@dependabot rebase" only from accounts with push access,
+  // so only the approver token may ask; an App comment is ignored.
   if (target.mergeable_state === "dirty") {
     if (r) return out("conflict", "close-stale-replacement", `${label} conflicts with ${policy.defaultBranch}; it is closed and rebuilt after the update bot rebases the original.`);
+    if (!s.canAskRebase) return out("conflict", "none", "Dependabot rebases conflicting updates on its own; a maintainer can comment `@dependabot rebase` to hurry it.");
     return s.marks.rebase ? out("conflict", "none", "The update bot was asked to rebase this conflicting head; waiting.") : out("conflict", "request-rebase", "Asking the update bot to rebase the conflicting head.");
   }
   if (target.mergeable_state === "behind" && s.strict) {
-    if (s.marks.refresh) return out("waiting-ci", "none", `${label} is behind ${policy.defaultBranch}; a refresh was already requested for this head.`);
-    return out("waiting-ci", r ? "refresh" : "request-rebase", `${label} is behind ${policy.defaultBranch}; refreshing once for this head.`);
+    if (r) {
+      if (!s.marks.refresh) return out("waiting-ci", "refresh", `${label} is behind ${policy.defaultBranch}; refreshing once for this head.`);
+    } else if (policy.merge.originals && s.canAskRebase && !s.marks.rebase && t.ci.state === "success") {
+      return out("waiting-ci", "request-rebase", `${label} is behind ${policy.defaultBranch}; asking the update bot to rebase once for this head.`);
+    }
+    // Otherwise evaluate the head as it is: a failing head can still be repaired,
+    // and the replacement branch is refreshed by the App.
   }
 
   // Runtime contract sync is trusted and free. Run it before any model work.
