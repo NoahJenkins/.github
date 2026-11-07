@@ -27,7 +27,7 @@ const out = (state, action = "none", detail = STATES[state], extra = {}) => ({ s
 export function decide(s) {
   const { policy, original: o, replacement: r, usage, limits } = s;
   if (!s.enabled) return out("disabled");
-  if (s.exclusiveActive) return out("missing-configuration", "none", "Another dependency controller is active for this repository. Disable it before pr-repair takes over, so two controllers never race on one pull request.");
+  if (s.exclusiveActive) return out("missing-configuration", "none", s.exclusiveDetail ?? "Another dependency controller is active for this repository. Disable it before pr-repair takes over, so two controllers never race on one pull request.");
   if (!o.eligibility.eligible) return out("unsupported-scope", "none", o.eligibility.reason);
 
   // Replacement lifecycle first: it may be merged, stale, or foreign.

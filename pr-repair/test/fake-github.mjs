@@ -65,6 +65,9 @@ export class FakeGitHub {
     if (p === `${r}/issues`) return [...this.issues.values()].filter((i) => i.state === "open").map((i) => structuredClone(i));
     if ((m = p.match(new RegExp(`^${r}/issues/(\\d+)/comments$`)))) return this.comments.filter((c) => c.issue === Number(m[1])).map((c) => structuredClone(c));
     if ((m = p.match(new RegExp(`^${r}/pulls/(\\d+)/(reviews|comments)$`)))) return [];
+    if ((m = p.match(new RegExp(`^${r}/actions/workflows/([^/]+)/runs$`))) && this.workflowRuns?.[decodeURIComponent(m[1])]) {
+      return this.workflowRuns[decodeURIComponent(m[1])].filter((x) => !query.status || x.status === query.status);
+    }
     if (p.startsWith(`${r}/actions/workflows/`)) return this.runs;
     throw new Error(`fake paginate not implemented: ${path}`);
   }
