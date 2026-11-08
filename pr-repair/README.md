@@ -63,7 +63,7 @@ the same budget. Every pull request always shows one named state: on its
 | plan | controller App token (+ optional approver token) | PR metadata only | no |
 | prepare | read-only `GITHUB_TOKEN` | files, sanitized logs | no |
 | infer | provider credential only | curated bundle (read-only tool) | no |
-| validate | read-only `GITHUB_TOKEN` (never passed to containers) | candidate tree | yes, in containers: `--cap-drop=ALL`, `no-new-privileges`, uid 1000, no Docker socket, no host mounts except a copy, checks on `--network=none` |
+| validate | read-only `GITHUB_TOKEN` (never passed to containers) | candidate tree | yes, in containers: `--cap-drop=ALL`, `no-new-privileges`, the runner's own non-root uid, no Docker socket, no host mounts except a copy, checks on `--network=none` |
 | publish | controller App token | sealed artifacts | no |
 
 - The caller runs only on `workflow_run`, `schedule`, and `workflow_dispatch` for
