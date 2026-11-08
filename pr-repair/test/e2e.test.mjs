@@ -349,3 +349,50 @@ test("review findings only in non-editable files reach a maintainer without a pa
   assert.match(p.rows[0].detail, /smoke-api-docker\.sh/);
   assert.equal(ledgerOf(w.gh).entries.filter((e) => e.kind === "repair").length, 0, "no paid repair is reserved");
 });
+
+// Metriks replacement 183 was closed by a closing keyword in another PR, so
+// the controller never deleted pr-repair/167, and the next sync for #167's new
+// head failed with "pr-repair/167 already exists at another commit".
+test("a branch left by a closed, unmerged App replacement is reused; anything else is refused", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const app = { gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin };
+  const syncOnce = async (checkout) => {
+    const [task] = (await runPlan({ ...w.ctx, now: NOW() })).tasks;
+    const out = mkdtempSync(join(tmpdir(), "pr-repair-out-"));
+    t.after(() => rmSync(out, { recursive: true, force: true }));
+    await runValidate(app, task, { candidateRoot: checkout, proposalDir: out, outDir: join(out, "validated"), validation: () => ({ passed: true, results: [], generated: new Map([["pnpm-lock.yaml", "lockfileVersion: '9.0'\n"]]) }) });
+    return runPublish(app, task, { proposalDir: out, validatedDir: join(out, "validated") });
+  };
+  const first = await syncOnce(w.checkout.dir);
+  const stale = w.gh.pulls.get(first.replacement);
+  stale.state = "closed"; // closed outside the controller; its branch stays
+
+  // Dependabot recreates the original on a new head.
+  const files = new Map(w.gh.commits.get(w.head).tree);
+  files.set("README.md", "recreated\n");
+  const next = gitCheckout(files);
+  t.after(() => rmSync(next.dir, { recursive: true, force: true }));
+  const head2 = w.gh.commit(files, [w.main], "bump oven/bun", "dependabot[bot]", next.sha);
+  w.gh.refs.set("dependabot/docker/apps/api/bun", head2);
+  w.gh.pulls.get(167).head.sha = head2;
+  w.ci(head2, "failure");
+  const second = await syncOnce(next.dir);
+  assert.equal(second.published, true, second.note);
+  assert.notEqual(second.replacement, first.replacement);
+  assert.equal(w.gh.pulls.get(second.replacement).head.ref, "pr-repair/167");
+
+  // A branch whose head no closed App replacement explains is never reset.
+  w.gh.pulls.get(second.replacement).state = "closed";
+  w.gh.refs.set("pr-repair/167", w.gh.commit(files, [head2], "someone else's work", "NoahJenkins"));
+  const files3 = new Map(files).set("README.md", "again\n");
+  const third = gitCheckout(files3);
+  t.after(() => rmSync(third.dir, { recursive: true, force: true }));
+  const head3 = w.gh.commit(files3, [w.main], "bump oven/bun", "dependabot[bot]", third.sha);
+  w.gh.refs.set("dependabot/docker/apps/api/bun", head3);
+  w.gh.pulls.get(167).head.sha = head3;
+  w.ci(head3, "failure");
+  const refused = await syncOnce(third.dir);
+  assert.equal(refused.published, false);
+  assert.match(refused.note, /already exists at another commit/);
+});

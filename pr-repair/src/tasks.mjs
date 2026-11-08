@@ -186,6 +186,12 @@ export async function runValidate(ctx, task, { candidateRoot, proposalDir, outDi
 }
 
 // ---------- publish (controller App token) ----------
+async function leftoverReplacement({ gh, repo, botLogin }, branch, sha) {
+  const pulls = await gh.paginate(`/repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${repo.split("/")[0]}:${branch}`)}`);
+  if (pulls.some((p) => p.state === "open")) return false;
+  return pulls.some((p) => p.state === "closed" && !p.merged_at && p.user?.login === botLogin && p.head.sha === sha);
+}
+
 function feedbackOf(validated) {
   const failing = (validated.results ?? []).filter((r) => !r.passed).map((r) => ({ step: r.name, output: (r.output ?? "").slice(-1500) }));
   return { reasons: (validated.reasons ?? []).slice(0, 10), failing: failing.slice(0, 3) };
@@ -275,7 +281,14 @@ export async function runPublish(ctx, task, { proposalDir, validatedDir }) {
     } catch (e) {
       if (e.status !== 422) throw e;
       const ref = await gh.get(`/repos/${repo}/git/ref/heads/${branch}`);
-      if (ref.object.sha !== task.head) return failWith(`${branch} already exists at another commit`);
+      if (ref.object.sha !== task.head) {
+        // A replacement closed outside the controller (by hand, or by a
+        // closing keyword elsewhere) leaves its branch behind. Reset it only
+        // when that exact head belongs to a closed, unmerged App replacement
+        // and no open pull request uses the branch.
+        if (!(await leftoverReplacement(ctx, branch, ref.object.sha))) return failWith(`${branch} already exists at another commit`);
+        await gh.patch(`/repos/${repo}/git/refs/heads/${branch}`, { sha: task.head, force: true });
+      }
     }
   }
   const commit = await gh.graphql(
