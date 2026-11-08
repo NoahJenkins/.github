@@ -138,10 +138,20 @@ export class FakeGitHub {
     if ((m = path.match(/issues\/(\d+)$/))) { Object.assign(this.issues.get(Number(m[1])), body); return {}; }
     if ((m = path.match(/check-runs\/(\d+)$/))) { Object.assign(this.checks.find((c) => c.id === Number(m[1])), body); return {}; }
     if ((m = path.match(/pulls\/(\d+)$/))) { Object.assign(this.pulls.get(Number(m[1])), body); return {}; }
+    if ((m = path.match(/git\/refs\/heads\/(.+)$/))) {
+      if (!body.force) throw Object.assign(new Error("not a fast-forward"), { status: 422 });
+      this.refs.set(m[1], body.sha);
+      return {};
+    }
     throw new Error(`fake PATCH not implemented: ${path}`);
   }
   async put(path, body) { this.record("PUT", path, body); return {}; }
-  async del(path) { this.record("DELETE", path); return null; }
+  async del(path) {
+    this.record("DELETE", path);
+    const m = path.match(/git\/refs\/heads\/(.+)$/);
+    if (m) this.refs.delete(m[1]);
+    return null;
+  }
   async graphql(query, variables) {
     this.record("GRAPHQL", query.match(/\{\s*(\w+)/)[1], variables);
     if (query.includes("createCommitOnBranch")) {
