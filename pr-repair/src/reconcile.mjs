@@ -1,12 +1,12 @@
 // plan mode: reconcile every eligible pull request, take the non-model steps,
 // reserve model and sync work durably, and publish an actionable status.
-import { conclusionFor, decide, STATES } from "./decide.mjs";
+import { NO_CHANGE, conclusionFor, decide, STATES } from "./decide.mjs";
 import { digest } from "./digest.mjs";
 import { REPLACEMENT_PREFIX, originalEligibility, parseProvenance, replacementEligibility } from "./eligibility.mjs";
 import { encodeLedger, mark, marked, prune, readLedger, reserve, RESERVATION_TTL, transition, usage } from "./ledger.mjs";
 import { inferenceGaps } from "./policy.mjs";
 import { fieldFilesAt, originalRequest, syncFor } from "./repo.mjs";
-import { STATUS_CHECK, ciState, classifyThreads, codexState, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
+import { STATUS_CHECK, ciState, classifyThreads, codexState, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
 
 export const STATE_LABEL = "pr-repair";
 const DASHBOARD = "<!-- pr-repair-dashboard:v1 -->";
@@ -294,6 +294,10 @@ export async function runPlan(ctx) {
         if (r && !r.merged) {
           r.review = reviewResult(checks, { appId: ctx.appId, head: target.head.sha, ledger });
           r.codex = policy.review.requireCodex ? await codexState(gh, repo, target.number, target.head.sha) : null;
+          if (r.codex === "findings" || r.review?.verdict === "fail") {
+            const reviewComments = r.codex === "findings" ? await gh.paginate(`/repos/${repo}/pulls/${target.number}/comments`) : [];
+            r.findingFiles = findingFiles({ codex: r.codex, reviewComments, review: r.review, head: target.head.sha });
+          }
           const threads = await reviewThreads(gh, repo, target.number);
           const signedOff = r.review?.verdict === "pass" && (!policy.review.requireCodex || r.codex === "pass");
           const cls = classifyThreads(threads, { agentLogins: [...policy.review.agentLogins, ctx.botLogin], head: target.head.sha });
@@ -305,6 +309,7 @@ export async function runPlan(ctx) {
         }
         s.replacement = r;
         const key = (k) => `${o.number}:${target.head.sha}:${k}`;
+        s.emptyRepairOnHead = ledger.entries.some((e) => e.kind === "repair" && e.root === o.number && e.head === target.head.sha && e.status === "failed" && e.feedback?.reasons?.includes(NO_CHANGE));
         s.marks = { rebase: marked(ledger, key("rebase")), refresh: marked(ledger, key("refresh")), rerun: marked(ledger, key("rerun")), codex: marked(ledger, key("codex")) };
       }
       s.targetHead = target.head.sha;

@@ -38,7 +38,7 @@ the same budget. Every pull request always shows one named state: on its
 | `conflict` | A merge conflict; the update bot is asked to rebase once per head. |
 | `exhausted` | The bounded budget is used. A maintainer decides. |
 | `production-paused` | Production evidence is unhealthy or unreadable; queued merges are disabled. |
-| `needs-human` | Foreign commits, human or current-head threads, or repeated interruptions. |
+| `needs-human` | Foreign commits, human or current-head threads, repeated interruptions, review findings only in files repair may not edit, or a repair of this head that proposed no change. |
 | `waiting-merge-path` | Green original; the repository's existing workflow merges it. |
 | `queued-merge` | Native auto-merge is queued for the validated head. |
 | `resolved` | The replacement merged and the original closed. |

@@ -134,3 +134,19 @@ test("transport: Vercel AI Gateway requests ask for prefix caching and record ca
   assert.equal(isVercelGateway("https://ai-gateway.vercel.sh/v1"), true);
   assert.equal(isVercelGateway("https://ai-gateway.vercel.sh.evil.example/v1"), false);
 });
+
+test("finding files come from current-head Codex comments and the controller's review", async () => {
+  const { findingFiles } = await import("../src/signals.mjs");
+  const head = "2".repeat(40);
+  const comments = [
+    { user: { login: "chatgpt-codex-connector[bot]" }, commit_id: head, path: "docs/TODO.md" },
+    { user: { login: "chatgpt-codex-connector[bot]" }, commit_id: "9".repeat(40), path: "apps/api/src/old.ts" },
+    { user: { login: "someone" }, commit_id: head, path: "apps/web/src/x.ts" },
+  ];
+  assert.deepEqual(findingFiles({ codex: "findings", reviewComments: comments, review: null, head }), ["docs/TODO.md"]);
+  assert.deepEqual(findingFiles({ codex: "findings", reviewComments: comments, review: { verdict: "fail", findings: [{ file: "README.md" }] }, head }), ["docs/TODO.md", "README.md"]);
+  // Findings without a location are unknown, so a repair stays possible.
+  assert.equal(findingFiles({ codex: "findings", reviewComments: [], review: null, head }), null);
+  assert.equal(findingFiles({ codex: "pass", reviewComments: [], review: { verdict: "fail", findings: [{ message: "x" }] }, head }), null);
+  assert.deepEqual(findingFiles({ codex: "pass", reviewComments: comments, review: null, head }), []);
+});

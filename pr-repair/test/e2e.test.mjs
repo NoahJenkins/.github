@@ -325,3 +325,27 @@ test("prepare skips binary context files instead of failing the attempt (ark can
   assert.equal(existsSync(join(dir, "data/context/apps/api/src/favicon.ico")), false, "binary by extension");
   assert.equal(existsSync(join(dir, "data/context/apps/api/src/logo.bin")), false, "binary by content");
 });
+
+// Metriks #183: findings only in a file repair may not edit (there docs/TODO.md).
+test("review findings only in non-editable files reach a maintainer without a paid repair", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const app = { gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin };
+  const [sync] = (await runPlan(w.ctx)).tasks;
+  const out = mkdtempSync(join(tmpdir(), "pr-repair-out-"));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  await runValidate(app, sync, { candidateRoot: w.checkout.dir, proposalDir: out, outDir: join(out, "validated"), validation: () => ({ passed: true, results: [], generated: new Map([["pnpm-lock.yaml", "lockfileVersion: '9.0'\n"]]) }) });
+  const pub = await runPublish(app, sync, { proposalDir: out, validatedDir: join(out, "validated") });
+  const replacement = w.gh.pulls.get(pub.replacement);
+  w.ci(replacement.head.sha, "success");
+  const [review] = (await runPlan({ ...w.ctx, now: NOW() })).tasks;
+  const files = w.gh.compare(w.main, replacement.head.sha).files.map((f) => f.filename);
+  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: review, transport: "openai-compatible", model: "deepseek/deepseek-v4-flash", result: { verdict: "request_changes", summary: "The smoke message is stale.", coveredFiles: files, findings: [{ severity: "high", file: "scripts/ops/smoke-api-docker.sh", message: "Name the new Bun version in the smoke message." }] } })));
+  assert.equal((await runPublish(app, review, { proposalDir: out, validatedDir: join(out, "validated") })).review, "request_changes");
+
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.deepEqual(p.tasks, []);
+  assert.equal(p.rows[0].state, "needs-human");
+  assert.match(p.rows[0].detail, /smoke-api-docker\.sh/);
+  assert.equal(ledgerOf(w.gh).entries.filter((e) => e.kind === "repair").length, 0, "no paid repair is reserved");
+});

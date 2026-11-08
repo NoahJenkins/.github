@@ -202,3 +202,27 @@ test("production pauses only merges pr-repair owns (RooferChat: release in progr
   const own = decide(snap({ productionHealthy: false, original: queuedOriginal }));
   assert.deepEqual([own.action, own.pause], ["pause-merge", [101]]);
 });
+
+// Metriks #183: Codex flagged only docs/TODO.md, which the model may not edit.
+// Three paid repairs each returned no change before the budget ran out.
+test("findings only in files the model may not edit go to a maintainer, unpaid", () => {
+  const p = policy();
+  const outside = "docs/TODO.md";
+  assert.ok(!p.repair.editable.some((g) => g === outside));
+  const d = decide(snap({ replacement: replacement({ codex: "findings", findingFiles: [outside] }), targetHead: H("2") }));
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  assert.match(d.detail, /docs\/TODO\.md/);
+  // One editable file is enough for a repair; unknown locations still repair.
+  const inside = "apps/api/src/x.ts";
+  assert.equal(decide(snap({ replacement: replacement({ codex: "findings", findingFiles: [outside, inside] }), targetHead: H("2") })).action, "repair");
+  assert.equal(decide(snap({ replacement: replacement({ codex: "findings", findingFiles: null }), targetHead: H("2") })).action, "repair");
+  // A failing check is evidence the model may fix in editable files.
+  assert.equal(decide(snap({ replacement: replacement({ codex: "findings", findingFiles: [outside], ci: red }), targetHead: H("2"), marks: { rerun: true } })).action, "repair");
+});
+
+test("a repair that proposed no change ends paid work on that head", () => {
+  const d = decide(snap({ replacement: replacement({ codex: "findings" }), targetHead: H("2"), emptyRepairOnHead: true }));
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  const r = decide(snap({ original: { ...snap().original, ci: red }, marks: { rerun: true }, emptyRepairOnHead: true }));
+  assert.deepEqual([r.state, r.action], ["needs-human", "none"]);
+});
