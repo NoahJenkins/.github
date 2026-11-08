@@ -1,3 +1,8 @@
+import { matchesAny } from "../../review-gate/src/glob.mjs";
+
+// Recorded by publish when a repair proposal is empty; decide() reads it back.
+export const NO_CHANGE = "the repair proposal changes nothing";
+
 // The pure decision for one original update and its replacement. Every path
 // ends in a named state, so a stalled pull request is always visible.
 
@@ -95,6 +100,13 @@ export function decide(s) {
   }
   if (ci.state === "failure" || findings) {
     const why = ci.state === "failure" ? `failed ${ci.failed.join(", ")}` : "blocking review findings";
+    // Paid repair only where the model can act: Metriks #183 spent three
+    // attempts on findings in docs the model may not edit.
+    if (s.emptyRepairOnHead) return out("needs-human", "none", `${label} ${why}; a repair of this head proposed no change, so a maintainer decides next.`);
+    if (ci.state !== "failure" && r.findingFiles?.length) {
+      const editable = (f) => matchesAny(f, policy.repair.editable) && !matchesAny(f, policy.repair.protected ?? []);
+      if (!r.findingFiles.some(editable)) return out("needs-human", "none", `${label} has review findings only in files repair may not edit (${r.findingFiles.join(", ")}); a maintainer resolves them.`);
+    }
     if (usage.repair >= limits.repairPerPr) return out("exhausted", "none", `${label} ${why}; repair budget used (${usage.repair}/${limits.repairPerPr}).`);
     if (s.inferenceGaps.length) return out("missing-configuration", "none", `${label} ${why}. Repair is paused: ${s.inferenceGaps.join("; ")}.`);
     if (usage.todayModel >= limits.dailyModelTasks) return out("waiting-ci", "none", `${label} ${why}; the daily model budget is used. Resumes tomorrow (UTC).`);

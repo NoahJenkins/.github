@@ -1,6 +1,6 @@
 // Reads the evidence a decision needs: required checks, production health,
 // review conversations, and the controller's own review check.
-import { codexVerdict } from "../../review-gate/src/codex.mjs";
+import { CODEX_BOT, codexVerdict } from "../../review-gate/src/codex.mjs";
 
 export const REVIEW_CHECK = "pr-repair / independent review";
 export const STATUS_CHECK = "pr-repair";
@@ -109,6 +109,22 @@ export async function codexState(gh, repo, number, head) {
   const v = codexVerdict({ headSha: head, comments, reviews });
   if (!v.done) return "pending";
   return v.kind === "pass" ? "pass" : v.kind === "findings" ? "findings" : "error";
+}
+
+// Files named by the blocking findings on this head, or null when a finding
+// has no location (then only a repair attempt can tell whether it is fixable).
+export function findingFiles({ codex, reviewComments, review, head }) {
+  const files = [];
+  if (codex === "findings") {
+    const named = reviewComments.filter((c) => c.user?.login === CODEX_BOT && c.commit_id === head && c.path).map((c) => c.path);
+    if (!named.length) return null;
+    files.push(...named);
+  }
+  if (review?.verdict === "fail") {
+    if (!review.findings?.length || review.findings.some((f) => !f.file)) return null;
+    files.push(...review.findings.map((f) => f.file));
+  }
+  return [...new Set(files)];
 }
 
 // The controller's own review: the newest App check on this head, bound to the

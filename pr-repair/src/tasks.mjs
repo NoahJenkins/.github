@@ -8,6 +8,7 @@ import { matchesAny } from "../../review-gate/src/glob.mjs";
 import { admit, validateProposalShape } from "./admission.mjs";
 import { loadBundle, promptFor, validateReview, writeBundle } from "./bundle.mjs";
 import { dockerFroms, isDockerfile, syncRuntimeFields } from "./contract.mjs";
+import { NO_CHANGE } from "./decide.mjs";
 import { SHA, digest, sanitizeLog, seal, verifySeal } from "./digest.mjs";
 import { REPLACEMENT_PREFIX } from "./eligibility.mjs";
 import { transition } from "./ledger.mjs";
@@ -171,7 +172,7 @@ export async function runValidate(ctx, task, { candidateRoot, proposalDir, outDi
   for (const [p, c] of headFiles) head.set(p, c);
   const first = admit({ policy, head, synced, proposal, generatedPaths, targets: req.targets, moves: req.moves, fieldFiles });
   if (!first.ok) return result({ proposalDigest, reasons: first.reasons });
-  if (!first.files.length && task.kind === "repair") return result({ proposalDigest, reasons: ["the repair proposal changes nothing"] });
+  if (!first.files.length && task.kind === "repair") return result({ proposalDigest, reasons: [NO_CHANGE] });
   // A link in the candidate tree could redirect these writes; refuse it first.
   const { rejectLinks, writeCandidate } = await import("./validate.mjs");
   rejectLinks(candidateRoot);
