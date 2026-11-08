@@ -396,3 +396,54 @@ test("a branch left by a closed, unmerged App replacement is reused; anything el
   assert.equal(refused.published, false);
   assert.match(refused.note, /already exists at another commit/);
 });
+
+// Metriks #186: checks and reviews passed, the App approved, and GitHub refused
+// auto-merge because the pull request was already mergable ("unstable status").
+test("an already-mergeable replacement is merged directly at the exact head, approved once", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] }, merge: { ...p.merge, approve: "app" } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const app = { gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin };
+  const [sync] = (await runPlan(w.ctx)).tasks;
+  const out = mkdtempSync(join(tmpdir(), "pr-repair-out-"));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  await runValidate(app, sync, { candidateRoot: w.checkout.dir, proposalDir: out, outDir: join(out, "validated"), validation: () => ({ passed: true, results: [], generated: new Map([["pnpm-lock.yaml", "lockfileVersion: '9.0'\n"]]) }) });
+  const pub = await runPublish(app, sync, { proposalDir: out, validatedDir: join(out, "validated") });
+  const replacement = w.gh.pulls.get(pub.replacement);
+  w.ci(replacement.head.sha, "success");
+  const [review] = (await runPlan({ ...w.ctx, now: NOW() })).tasks;
+  const files = w.gh.compare(w.main, replacement.head.sha).files.map((f) => f.filename);
+  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: review, transport: "openai-compatible", model: "deepseek/deepseek-v4-flash", result: { verdict: "approve", summary: "Consistent.", coveredFiles: files, findings: [] } })));
+  await runPublish(app, review, { proposalDir: out, validatedDir: join(out, "validated") });
+
+  w.gh.mergeableNow = true;
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(p.rows[0].state, "queued-merge");
+  const merged = w.gh.writes.find((x) => x.method === "GRAPHQL" && x.path === "mergePullRequest");
+  assert.equal(merged?.body.head, replacement.head.sha, "the direct merge is bound to the reviewed head");
+  assert.ok(replacement.merged_at);
+  await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(w.gh.pulls.get(167).state, "closed");
+  assert.equal(w.gh.writes.filter((x) => x.path.endsWith(`/pulls/${pub.replacement}/reviews`)).length, 1, "approved once");
+});
+
+test("a repeated merge attempt does not approve the same head twice", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] }, merge: { ...p.merge, approve: "app" } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const app = { gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin };
+  const [sync] = (await runPlan(w.ctx)).tasks;
+  const out = mkdtempSync(join(tmpdir(), "pr-repair-out-"));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  await runValidate(app, sync, { candidateRoot: w.checkout.dir, proposalDir: out, outDir: join(out, "validated"), validation: () => ({ passed: true, results: [], generated: new Map([["pnpm-lock.yaml", "lockfileVersion: '9.0'\n"]]) }) });
+  const pub = await runPublish(app, sync, { proposalDir: out, validatedDir: join(out, "validated") });
+  const replacement = w.gh.pulls.get(pub.replacement);
+  w.ci(replacement.head.sha, "success");
+  const [review] = (await runPlan({ ...w.ctx, now: NOW() })).tasks;
+  const files = w.gh.compare(w.main, replacement.head.sha).files.map((f) => f.filename);
+  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: review, transport: "openai-compatible", model: "deepseek/deepseek-v4-flash", result: { verdict: "approve", summary: "Consistent.", coveredFiles: files, findings: [] } })));
+  await runPublish(app, review, { proposalDir: out, validatedDir: join(out, "validated") });
+  await runPlan({ ...w.ctx, now: NOW() });
+  replacement.auto_merge = null; // auto-merge did not stick; the next run tries again
+  await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(w.gh.writes.filter((x) => x.path.endsWith(`/pulls/${pub.replacement}/reviews`)).length, 1);
+  assert.equal(w.gh.writes.filter((x) => x.path === "enablePullRequestAutoMerge").length, 2);
+});

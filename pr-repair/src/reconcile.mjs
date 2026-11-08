@@ -175,7 +175,8 @@ async function act(ctx, d, { o, r, target, reviewSha }) {
     case "merge": {
       const cur = await fresh(pr.number, reviewSha);
       if (cur.base.sha !== ctx.baseSha && cur.mergeable_state === "behind") throw new Error("base moved before merge");
-      if (ctx.policy.merge.approve !== "none") {
+      const reviews = ctx.policy.merge.approve !== "none" ? await gh.paginate(`/repos/${repo}/pulls/${pr.number}/reviews`) : [];
+      if (ctx.policy.merge.approve !== "none" && !reviews.some((x) => x.state === "APPROVED" && x.commit_id === reviewSha)) {
         const approver = ctx.policy.merge.approve === "approver-token" ? ctx.approverGh : gh;
         if (!approver) throw new Error("merge.approve is approver-token but no approver token was provided");
         await approver.post(`/repos/${repo}/pulls/${pr.number}/reviews`, {
@@ -185,7 +186,15 @@ async function act(ctx, d, { o, r, target, reviewSha }) {
         });
       }
       await fresh(pr.number, reviewSha);
-      await gh.graphql("mutation($id:ID!,$head:GitObjectID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:SQUASH}){pullRequest{id}}}", { id: cur.node_id, head: reviewSha });
+      try {
+        await gh.graphql("mutation($id:ID!,$head:GitObjectID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:SQUASH}){pullRequest{id}}}", { id: cur.node_id, head: reviewSha });
+      } catch (e) {
+        // GitHub refuses auto-merge once nothing is left to wait for (Metriks
+        // #186: "unstable status"). Merge now, bound to the same reviewed head;
+        // rulesets still decide whether the merge is allowed.
+        if (!/is in (clean|unstable|has_hooks) status/i.test(e.message)) throw e;
+        await gh.graphql("mutation($id:ID!,$head:GitObjectID!){mergePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:SQUASH}){pullRequest{id}}}", { id: cur.node_id, head: reviewSha });
+      }
       return null;
     }
     default:
