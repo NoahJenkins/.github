@@ -65,7 +65,8 @@ export class FakeGitHub {
     if ((m = p.match(new RegExp(`^${r}/commits/(\\w+)/check-runs$`)))) return this.checks.filter((c) => c.head_sha === m[1]).map((c) => structuredClone(c));
     if (p === `${r}/issues`) return [...this.issues.values()].filter((i) => i.state === "open").map((i) => structuredClone(i));
     if ((m = p.match(new RegExp(`^${r}/issues/(\\d+)/comments$`)))) return this.comments.filter((c) => c.issue === Number(m[1])).map((c) => structuredClone(c));
-    if ((m = p.match(new RegExp(`^${r}/pulls/(\\d+)/(reviews|comments)$`)))) return [];
+    if ((m = p.match(new RegExp(`^${r}/pulls/(\\d+)/reviews$`)))) return (this.reviews ?? []).filter((x) => x.pr === Number(m[1])).map((x) => structuredClone(x));
+    if ((m = p.match(new RegExp(`^${r}/pulls/(\\d+)/comments$`)))) return [];
     if ((m = p.match(new RegExp(`^${r}/actions/workflows/([^/]+)/runs$`))) && this.workflowRuns?.[decodeURIComponent(m[1])]) {
       return this.workflowRuns[decodeURIComponent(m[1])].filter((x) => !query.status || x.status === query.status);
     }
@@ -103,7 +104,11 @@ export class FakeGitHub {
     }
     if (path === `${r}/labels`) return {};
     if (path.match(/\/actions\/runs\/\d+\/rerun-failed-jobs$/)) return null;
-    if (path.match(/\/pulls\/\d+\/reviews$/)) return { id: this.id() };
+    if ((m = path.match(/\/pulls\/(\d+)\/reviews$/))) {
+      const review = { id: this.id(), pr: Number(m[1]), state: body.event === "APPROVE" ? "APPROVED" : body.event, commit_id: body.commit_id };
+      (this.reviews ??= []).push(review);
+      return { id: review.id };
+    }
     if (path === `${r}/issues`) {
       const i = { number: this.id(), state: "open", user: { id: this.botId }, body: body.body, labels: body.labels };
       this.issues.set(i.number, i);
@@ -163,6 +168,15 @@ export class FakeGitHub {
       this.refs.set(branch.branchName, id);
       for (const p of this.pulls.values()) if (p.head.ref === branch.branchName && p.state === "open") p.head.sha = id;
       return { data: { createCommitOnBranch: { commit: { oid: id } } } };
+    }
+    if (query.includes("enablePullRequestAutoMerge") && this.mergeableNow) {
+      throw Object.assign(new Error("GitHub GraphQL error: Pull request Pull request is in unstable status"), { graphql: true });
+    }
+    if (query.includes("mergePullRequest")) {
+      const pr = [...this.pulls.values()].find((x) => x.node_id === variables.id);
+      if (pr.head.sha !== variables.head) throw new Error("GitHub GraphQL error: Head branch was modified");
+      Object.assign(pr, { state: "closed", merged_at: new Date().toISOString() });
+      return { data: { mergePullRequest: { pullRequest: { id: pr.node_id } } } };
     }
     if (query.includes("reviewThreads")) return { data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } };
     return { data: {} };
