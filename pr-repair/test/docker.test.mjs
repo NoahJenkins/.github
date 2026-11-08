@@ -22,7 +22,7 @@ test("candidate checks see no credential, no network, no Docker socket, and run 
   try {
     const p = policy((r) => ({ ...r, validation: { image: IMAGE, commands: [
       'test -z "${GITHUB_TOKEN:-}${ACTIONS_RUNTIME_TOKEN:-}${PR_REPAIR_API_KEY:-}"',
-      'test "$(id -u)" = 1000',
+      `test "$(id -u)" = ${process.getuid()}`,
       "test ! -e /var/run/docker.sock",
       "node -e \"require('https').get('https://registry.npmjs.org',()=>process.exit(1)).on('error',()=>process.exit(0))\"",
     ] } }));

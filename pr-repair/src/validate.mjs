@@ -44,9 +44,13 @@ export const dockerEnv = (env = process.env) => ({
 const docker = (args, { timeout, input } = {}) =>
   execFileSync("docker", args, { env: dockerEnv(), timeout, input, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 
-export function containerArgs({ name, image, workspace, network, memory, cpus, env, command }) {
-  return ["run", "--rm", "--name", name, "--init", `--network=${network}`, "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", "1000:1000",
-    `--memory=${memory}`, `--cpus=${cpus}`, "--pids-limit=1024", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=2g,uid=1000,gid=1000",
+// Candidates run as the runner's own unprivileged user, so the runner can
+// always delete what they write (hosted runners are uid 1001, not 1000). A
+// root runner still gets an unprivileged candidate.
+export function containerArgs({ name, image, workspace, network, memory, cpus, env, command, uid = process.getuid(), gid = process.getgid() }) {
+  if (uid === 0) [uid, gid] = [1000, 1000];
+  return ["run", "--rm", "--name", name, "--init", `--network=${network}`, "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", `${uid}:${gid}`,
+    `--memory=${memory}`, `--cpus=${cpus}`, "--pids-limit=1024", "--tmpfs", `/tmp:rw,exec,nosuid,nodev,size=2g,uid=${uid},gid=${gid}`,
     "-e", "HOME=/tmp/home", "-e", "CI=true", ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     "-v", `${workspace}:/workspace:rw`, "-w", "/workspace", image, "sh", "-eu", "-c", command];
 }
@@ -113,8 +117,17 @@ export function runValidation({ root, policy, image, exec = docker, log = consol
     return { passed: true, results, generated };
   } finally {
     try { docker(["image", "rm", "--force", tag]); } catch { /* best effort */ }
-    rmSync(ctx, { recursive: true, force: true });
-    rmSync(workspace, { recursive: true, force: true });
+    removeTree(ctx, log);
+    removeTree(workspace, log);
+  }
+}
+
+// Cleanup never replaces the validation result with its own error.
+export function removeTree(dir, log = console.log) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    log(`could not remove ${dir}: ${e.code ?? e.message}`);
   }
 }
 
