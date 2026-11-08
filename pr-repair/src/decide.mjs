@@ -46,7 +46,11 @@ export function decide(s) {
   const target = r ? r.pr : o.pr;
   const t = r ?? o;
   const label = r ? `replacement #${target.number}` : `#${target.number}`;
-  const anyQueued = Boolean(o.pr.auto_merge || r?.pr.auto_merge);
+  // Production pauses only merges pr-repair owns: its replacements, and
+  // originals only where policy lets pr-repair merge them. Another workflow's
+  // queued original is that workflow's to pause.
+  const pause = [r?.pr.auto_merge && r.pr.number, policy.merge.originals && o.pr.auto_merge && o.pr.number].filter(Boolean);
+  const paused = (state, detail) => out(state, pause.length ? "pause-merge" : "none", detail, pause.length ? { pause } : {});
 
   const inflight = (usage.open ?? [])[0];
   if (inflight) {
@@ -99,9 +103,9 @@ export function decide(s) {
 
   // Required checks pass on the current head.
   if (!r) {
-    if (!policy.merge.originals) return out("waiting-merge-path", anyQueued && !s.productionHealthy ? "pause-merge" : "none");
+    if (!policy.merge.originals) return out("waiting-merge-path");
     if (policy.review.originals && !o.review) return reviewOrPause(s, label);
-    if (!s.productionHealthy) return out("production-paused", anyQueued ? "pause-merge" : "none", s.productionReason);
+    if (!s.productionHealthy) return paused("production-paused", s.productionReason);
     if (o.pr.auto_merge?.enabled_by?.login === s.botLogin) return out("queued-merge");
     return out("queued-merge", "merge", `${label} passed required checks; queueing native auto-merge for ${target.head.sha.slice(0, 7)}.`);
   }
@@ -114,7 +118,7 @@ export function decide(s) {
   }
   if (r.threads.obsolete) return out("waiting-review", "resolve-threads", `Resolving ${r.threads.obsolete} obsolete agent conversation(s) after fresh signoff.`);
   if (r.threads.blocking) return out("needs-human", "none", `${r.threads.blocking} unresolved human or current-head conversation(s) need a maintainer.`);
-  if (!s.productionHealthy) return out("production-paused", anyQueued ? "pause-merge" : "none", s.productionReason);
+  if (!s.productionHealthy) return paused("production-paused", s.productionReason);
   if (r.pr.auto_merge && r.approved) return out("queued-merge");
   return out("queued-merge", "merge", `Independent review and required checks passed on ${target.head.sha.slice(0, 7)}; approving per policy and queueing native auto-merge.`);
 }

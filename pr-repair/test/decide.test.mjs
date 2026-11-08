@@ -186,3 +186,19 @@ test("a replacement is eligible only on the App's branch with App or bot commits
   assert.equal(replacementEligibility(p, r, [...ok, { author: { login: "NoahJenkins" }, commit: { verification: { verified: true } } }], { botLogin: "app[bot]", repo: "o/r" }).eligible, false);
   assert.equal(replacementEligibility(p, { ...r, user: { login: "NoahJenkins" } }, ok, { botLogin: "app[bot]", repo: "o/r" }).eligible, false);
 });
+
+test("production pauses only merges pr-repair owns (RooferChat: release in progress)", () => {
+  const p = policy((r) => ({ ...r, merge: { ...r.merge, originals: false } }));
+  const queuedOriginal = { ...snap().original, pr: pr(101, H("1"), { auto_merge: { merge_method: "squash" } }) };
+  // The repository's own workflow queued this original; pr-repair leaves it alone.
+  const d = decide(snap({ policy: p, limits: p.repair.limits, productionHealthy: false, original: queuedOriginal }));
+  assert.deepEqual([d.state, d.action], ["waiting-merge-path", "none"]);
+  // Its own queued replacement is paused, and the original is not a pause target.
+  const r = replacement({ pr: { ...replacement().pr, auto_merge: { merge_method: "squash" } } });
+  const rd = decide(snap({ policy: p, limits: p.repair.limits, productionHealthy: false, original: queuedOriginal, replacement: r, targetHead: H("2") }));
+  assert.deepEqual([rd.state, rd.action], ["production-paused", "pause-merge"]);
+  assert.deepEqual(rd.pause, [200]);
+  // Where pr-repair merges originals (Metriks), it pauses them too.
+  const own = decide(snap({ productionHealthy: false, original: queuedOriginal }));
+  assert.deepEqual([own.action, own.pause], ["pause-merge", [101]]);
+});
