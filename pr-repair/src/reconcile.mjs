@@ -168,7 +168,7 @@ async function act(ctx, d, { o, r, target, reviewSha }) {
       }
       return null;
     case "pause-merge":
-      for (const p of [o, r?.pr].filter((x) => x?.auto_merge)) {
+      for (const p of [o, r?.pr].filter((x) => x?.auto_merge && d.pause?.includes(x.number))) {
         await gh.graphql("mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}", { id: p.node_id });
       }
       return null;
