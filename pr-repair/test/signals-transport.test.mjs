@@ -106,6 +106,7 @@ test("transport: call, token, and time budgets stop the loop", async () => {
   try {
     await assert.rejects(call(loop.endpoint), (e) => e.category === "budget" && /call limit 3/.test(e.message));
     assert.equal(loop.seen.length, 3);
+    assert.deepEqual(loop.seen.map((x) => x.body.tool_choice), ["auto", "auto", "none"]);
   } finally { loop.close(); }
   const greedy = await fake((n, b, res) => reply(res, 200, msg({ content: null, tool_calls: [{ id: "1", type: "function", function: { name: "read_data", arguments: '{"operation":"list"}' } }] }, "tool_calls", { prompt_tokens: 1, completion_tokens: 100 })));
   try {
@@ -115,6 +116,19 @@ test("transport: call, token, and time budgets stop the loop", async () => {
   try {
     await assert.rejects(call(slow.endpoint, { timeoutMs: 300 }), (e) => e.category === "timeout");
   } finally { slow.close(); }
+});
+
+// Metriks #186: the reviewer read files on all 16 allowed calls and never
+// answered, so the paid attempt ended with nothing.
+test("transport: the last allowed call withholds tools and asks for the answer", async () => {
+  const f = await fake((n, b, res) => reply(res, 200, b.tool_choice === "none" ? msg({ content: '{"files":[]}' }) : msg({ content: null, tool_calls: [{ id: String(n), type: "function", function: { name: "read_data", arguments: '{"operation":"list"}' } }] }, "tool_calls")));
+  try {
+    const r = await call(f.endpoint);
+    assert.deepEqual(r.result, { files: [] });
+    assert.equal(f.seen.length, 3);
+    assert.match(f.seen[2].body.messages.at(-1).content, /final/i);
+    assert.equal(f.seen[2].body.messages.at(-1).role, "user");
+  } finally { f.close(); }
 });
 
 test("transport: refuses to run without endpoint, key, model, or budget", async () => {

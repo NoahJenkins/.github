@@ -79,12 +79,16 @@ export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt,
     if (remaining <= 0) throw new TransportError("budget", "output token budget exhausted");
     if (Date.now() >= deadline) throw new TransportError("timeout", "inference deadline reached");
     usage.requests++;
+    // The last allowed call must answer: a budget spent only on reading
+    // leaves a paid attempt with nothing (Metriks #186 review).
+    const last = usage.requests === maxCalls;
+    if (last) messages.push({ role: "user", content: "This is your final request and read_data is no longer available. Return the required JSON now from what you have read." });
     let res;
     try {
       res = await fetcher(`${endpoint.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, tools: [TOOL], tool_choice: "auto", max_tokens: remaining, ...(gatewayCaching ? { providerOptions: { gateway: { caching: "auto" } } } : {}) }),
+        body: JSON.stringify({ model, messages, tools: [TOOL], tool_choice: last ? "none" : "auto", max_tokens: remaining, ...(gatewayCaching ? { providerOptions: { gateway: { caching: "auto" } } } : {}) }),
         redirect: "error",
         signal: AbortSignal.timeout(Math.max(1000, Math.min(180000, deadline - Date.now()))),
       });
