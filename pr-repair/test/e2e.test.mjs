@@ -520,22 +520,48 @@ test("an out-of-scope original still shows its state on the pull request", async
   assert.equal(p.rows.find((x) => x.number === 296).state, "unsupported-scope");
   const check = w.gh.checks.find((c) => c.name === STATUS_CHECK && c.head_sha === head);
   assert.ok(check, "a status check is posted on the out-of-scope original");
-  assert.equal(check.conclusion, "action_required");
+  assert.equal(check.conclusion, "neutral", "informational: it never blocks another workflow's merge");
+  assert.match(check.output.title, /unsupported-scope/);
 });
 
 // ark: the App brings a behind original up to date; the result stays eligible.
 test("an original refreshed by the App with a merge from main stays eligible", async (t) => {
-  const w = world();
+  const w = world((p) => ({ ...p, merge: { ...p.merge, approve: "app" } }));
   t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
   const tree = new Map(w.gh.commits.get(w.main).tree).set("package.json", '{"dependencies":{"x":"1.0.1"}}\n');
   const head = w.gh.commit(tree, [w.main], "bump x", "dependabot[bot]");
   const newMain = moveMain(w, ".github/workflows/ci.yml", "x\n");
   const merged = new Map(w.gh.commits.get(newMain).tree).set("package.json", tree.get("package.json"));
   const refreshed = w.gh.commit(merged, [head, newMain], "Merge branch 'main' into dependabot/npm_and_yarn/x", w.gh.botLogin);
+  w.gh.commits.get(refreshed).committer = "web-flow";
   w.gh.refs.set("dependabot/npm_and_yarn/x", refreshed);
   w.gh.pr(181, { title: "bump x from 1.0.0 to 1.0.1", head: { ref: "dependabot/npm_and_yarn/x", sha: refreshed } });
   w.ci(refreshed, "success");
   const p = await runPlan(w.ctx);
   const row = p.rows.find((x) => x.number === 181);
-  assert.notEqual(row.state, "unsupported-scope", row.detail);
+  assert.equal(row.state, "queued-merge", row.detail);
+
+  // The same shape with extra content in the merge is not Dependabot's change.
+  const tampered = w.gh.commit(new Map(merged).set("src/evil.js", "x"), [head, newMain], "Merge branch 'main'", w.gh.botLogin);
+  w.gh.commits.get(tampered).committer = "web-flow";
+  w.gh.refs.set("dependabot/npm_and_yarn/x", tampered);
+  w.gh.pulls.get(181).head.sha = tampered;
+  w.ci(tampered, "success");
+  const q = await runPlan({ ...w.ctx, now: NOW() });
+  assert.match(q.rows.find((x) => x.number === 181).detail, /not a verified commit/);
+});
+
+test("a green original behind main is brought up to date by the App once", async (t) => {
+  const w = world();
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const tree = new Map(w.gh.commits.get(w.main).tree).set("package.json", '{"dependencies":{"x":"1.0.1"}}\n');
+  const head = w.gh.commit(tree, [w.main], "bump x", "dependabot[bot]");
+  w.gh.refs.set("dependabot/npm_and_yarn/x", head);
+  w.gh.pr(180, { title: "bump x from 1.0.0 to 1.0.1", head: { ref: "dependabot/npm_and_yarn/x", sha: head }, mergeable_state: "behind" });
+  w.ci(head, "success");
+  await runPlan(w.ctx);
+  await runPlan({ ...w.ctx, now: NOW() });
+  const updates = w.gh.writes.filter((x) => x.method === "PUT" && x.path.endsWith("/pulls/180/update-branch"));
+  assert.equal(updates.length, 1, "once per head");
+  assert.equal(updates[0].body.expected_head_sha, head);
 });

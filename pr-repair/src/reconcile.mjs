@@ -5,7 +5,7 @@ import { digest } from "./digest.mjs";
 import { REPLACEMENT_PREFIX, originalEligibility, parseProvenance, replacementEligibility } from "./eligibility.mjs";
 import { encodeLedger, mark, marked, prune, readLedger, reserve, RESERVATION_TTL, transition, usage } from "./ledger.mjs";
 import { inferenceGaps } from "./policy.mjs";
-import { driftOverlap, fieldFilesAt, originalRequest, syncFor } from "./repo.mjs";
+import { driftOverlap, fieldFilesAt, originalRequest, soundRefreshes, syncFor } from "./repo.mjs";
 import { STATUS_CHECK, ciState, classifyThreads, codexState, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
 
 export const STATE_LABEL = "pr-repair";
@@ -53,9 +53,8 @@ async function checksAt(ctx, sha) {
   return ctx.gh.paginate(`/repos/${ctx.repo}/commits/${sha}/check-runs?filter=latest`, { key: "check_runs" });
 }
 
-export async function setStatusCheck(ctx, sha, decision, number) {
+export async function setStatusCheck(ctx, sha, decision, number, { conclusion = conclusionFor(decision.state) } = {}) {
   const existing = (await checksAt(ctx, sha)).filter((c) => c.name === STATUS_CHECK && c.app?.id === ctx.appId).sort((a, b) => b.id - a.id)[0];
-  const conclusion = conclusionFor(decision.state);
   const body = {
     status: "completed",
     conclusion,
@@ -247,7 +246,8 @@ export async function runPlan(ctx) {
     try {
       const o = await gh.get(`/repos/${repo}/pulls/${listed.number}`);
       const oCommits = await gh.paginate(`/repos/${repo}/pulls/${o.number}/commits`, { max: 250 });
-      const eligibility = originalEligibility(policy, o, oCommits, repo, { botLogin: ctx.botLogin });
+      const trustedRefreshes = await soundRefreshes(gh, repo, { commits: oCommits, head: o.head.sha, baseSha: ctx.baseSha, botLogin: ctx.botLogin, authors: policy.eligibility.authors });
+      const eligibility = originalEligibility(policy, o, oCommits, repo, { trustedRefreshes });
       if (eligibility.eligible && ledger.legacy[String(o.number)] === undefined && policy.legacy.attemptChecks.length) {
         ledger = { ...ledger, legacy: { ...ledger.legacy, [String(o.number)]: await legacyAttempts(ctx, o.head.sha) } };
       }
@@ -265,7 +265,7 @@ export async function runPlan(ctx) {
         baseSha: ctx.baseSha,
         limits: policy.repair.limits,
         usage: usage(ledger, o.number, ctx.now),
-        original: { pr: o, eligibility, moves: [], ci: { state: "pending", failed: [], missing: [] } },
+        original: { pr: o, eligibility, moves: [], ci: { state: "pending", failed: [], missing: [] }, refreshed: oCommits.some((c) => c.author?.login === ctx.botLogin) },
         replacement: null,
         marks: {},
       };
@@ -305,8 +305,9 @@ export async function runPlan(ctx) {
           // A review stays current while main only changes files this
           // replacement does not (Metriks #186: pin-only workflow edits).
           if (r.review && r.review.base !== ctx.baseSha) {
-            const files = (await gh.get(`/repos/${repo}/compare/${ctx.baseSha}...${target.head.sha}`)).files ?? [];
-            const overlap = files.length < 300 ? await driftOverlap(gh, repo, r.review.base, ctx.baseSha, files.map((f) => f.filename)) : null;
+            const files = await gh.get(`/repos/${repo}/compare/${ctx.baseSha}...${target.head.sha}`).then((c) => c.files ?? [], () => null);
+            const paths = files?.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean));
+            const overlap = files && files.length < 300 ? await driftOverlap(gh, repo, r.review.base, ctx.baseSha, paths) : null;
             if (overlap?.length === 0) r.review = { ...r.review, base: ctx.baseSha, reviewedBase: r.review.base };
           }
           r.codex = policy.review.requireCodex ? await codexState(gh, repo, target.number, target.head.sha) : null;
@@ -352,8 +353,11 @@ export async function runPlan(ctx) {
         if (markName) ledger = mark(ledger, `${o.number}:${target.head.sha}:${markName}`, ctx.now);
       }
       rows.push({ number: o.number, target: target.number, head: target.head.sha, state: d.state, detail: d.detail });
-      // Every update gets its state on the pull request, in scope or not.
-      if (ctx.enabled) {
+      // Every update gets its state on the pull request. Out of scope it is
+      // informational (neutral), so it never blocks another workflow's merge.
+      if (ctx.enabled && !eligibility.eligible && o.head.repo?.full_name === repo) {
+        await setStatusCheck(ctx, o.head.sha, d, o.number, { conclusion: "neutral" });
+      } else if (ctx.enabled && eligibility.eligible) {
         await setStatusCheck(ctx, target.head.sha, d, o.number);
         if (target !== o && !r?.merged) await setStatusCheck(ctx, o.head.sha, { ...d, detail: `Replacement #${target.number}: ${d.detail}` }, o.number);
       }

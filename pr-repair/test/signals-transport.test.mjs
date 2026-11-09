@@ -175,3 +175,35 @@ test("base drift: only files main changed since the review, and only when main m
   assert.equal(await driftOverlap(gh({ status: "ahead", files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) }), "o/r", A, B, ["x"]), null);
   assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: "y", previous_filename: "x" }] }), "o/r", A, B, ["x"]), ["x"], "a rename away from a reviewed file overlaps");
 });
+
+test("an App refresh counts only if GitHub made it, it merges main, and it changes no content", async () => {
+  const { soundRefreshes } = await import("../src/repo.mjs");
+  const S = (c) => c.repeat(40);
+  const files = { [S("d")]: { "package.json": "x 1.0.1" }, [S("h")]: { "package.json": "x 1.0.1", "ci.yml": "y" } };
+  const gh = ({ status = "ahead", changed = ["package.json"], head = S("h") } = {}) => ({
+    get: async (p) => {
+      if (p.includes("/compare/")) return { status, files: changed.map((filename) => ({ filename })) };
+      const m = p.match(/contents\/(.+)\?ref=(\w+)/);
+      const v = files[m[2]]?.[decodeURIComponent(m[1])];
+      if (v === undefined) throw Object.assign(new Error("404"), { status: 404 });
+      return { type: "file", content: Buffer.from(v).toString("base64") };
+    },
+  });
+  const bot = { sha: S("d"), author: { login: "dependabot[bot]" }, committer: { login: "dependabot[bot]" }, parents: [{ sha: S("0") }] };
+  const merge = { sha: S("h"), author: { login: "app[bot]" }, committer: { login: "web-flow" }, commit: { verification: { verified: true } }, parents: [{ sha: S("d") }, { sha: S("b") }] };
+  const args = { commits: [bot, merge], head: S("h"), baseSha: S("b"), botLogin: "app[bot]", authors: ["dependabot[bot]"] };
+  assert.deepEqual([...(await soundRefreshes(gh(), "o/r", args))], [S("h")]);
+  assert.equal((await soundRefreshes(gh(), "o/r", { ...args, commits: [bot, { ...merge, committer: { login: "someone" } }] })).size, 0, "not made by GitHub's update-branch");
+  assert.equal((await soundRefreshes(gh({ status: "diverged" }), "o/r", args)).size, 0, "second parent is not on main");
+  files[S("h")]["package.json"] = "x 6.6.6";
+  assert.equal((await soundRefreshes(gh(), "o/r", args)).size, 0, "content differs from Dependabot's");
+});
+
+test("base drift: the policy file always counts, and a failed comparison is not trusted", async () => {
+  const { driftOverlap } = await import("../src/repo.mjs");
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const ok = { get: async () => ({ status: "ahead", files: [{ filename: ".github/pr-repair.json" }] }) };
+  assert.deepEqual(await driftOverlap(ok, "o/r", A, B, ["apps/api/Dockerfile"]), [".github/pr-repair.json"]);
+  const broken = { get: async () => { throw Object.assign(new Error("404"), { status: 404 }); } };
+  assert.equal(await driftOverlap(broken, "o/r", A, B, ["x"]), null);
+});

@@ -85,13 +85,23 @@ export class FakeGitHub {
       if (!c || seen.has(c) || onMain.has(c) || !this.commits.has(c)) return;
       seen.add(c);
       for (const p of this.commits.get(c).parents) walk(p);
-      out.push({ sha: c, author: { login: this.commits.get(c).author }, commit: { verification: { verified: true } }, parents: this.commits.get(c).parents.map((sha) => ({ sha })) });
+      out.push({ sha: c, author: { login: this.commits.get(c).author }, committer: { login: this.commits.get(c).committer ?? this.commits.get(c).author }, commit: { verification: { verified: true } }, parents: this.commits.get(c).parents.map((sha) => ({ sha })) });
     };
     walk(pr.head.sha);
     return out;
   }
   compare(base, head) {
-    const ancestors = (s) => { const set = []; for (let c = s; c; c = this.commits.get(c)?.parents[0]) set.push(c); return set; };
+    // Breadth-first over all parents, so a merge commit's merge base is right.
+    const ancestors = (s) => {
+      const out = [];
+      for (let queue = [s]; queue.length;) {
+        const c = queue.shift();
+        if (!c || out.includes(c) || !this.commits.has(c)) continue;
+        out.push(c);
+        queue.push(...this.commits.get(c).parents);
+      }
+      return out;
+    };
     const a = ancestors(base);
     const mergeBase = ancestors(head).find((c) => a.includes(c));
     const before = this.commits.get(mergeBase).tree;

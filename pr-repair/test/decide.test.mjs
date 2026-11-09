@@ -229,6 +229,13 @@ test("a repair that proposed no change ends paid work on that head", () => {
 
 // ark: protection requires up-to-date branches, pr-repair merges originals, and
 // no account Dependabot obeys is configured. #180-#183 sat behind main for days.
+test("a refreshed original that later conflicts goes to a maintainer: Dependabot no longer rebases it", () => {
+  const dirty = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "dirty" }), refreshed: true };
+  const d = decide(snap({ original: dirty }));
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  assert.match(d.detail, /@dependabot recreate/);
+});
+
 test("a green, behind original with no rebase authority is refreshed by the App once per head", () => {
   const behind = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "behind" }), ci: green };
   assert.equal(decide(snap({ original: behind })).action, "refresh");
@@ -243,9 +250,10 @@ test("an original may carry the App's own verified merge-from-main commits, noth
   const base = { state: "open", draft: false, user: { login: "dependabot[bot]", type: "Bot" }, head: { ref: "dependabot/npm_and_yarn/x", repo: { full_name: "o/r" } }, base: { ref: "main" }, changed_files: 2, body: "", title: "bump x from 1.0.0 to 1.0.1" };
   const bot = { author: { login: "dependabot[bot]" }, commit: { verification: { verified: true } }, parents: [{ sha: "a" }] };
   const appMerge = { author: { login: "pr-repair-app[bot]" }, commit: { verification: { verified: true } }, parents: [{ sha: "a" }, { sha: "b" }] };
-  const ids = { botLogin: "pr-repair-app[bot]" };
-  assert.equal(originalEligibility(p, base, [bot, appMerge], "o/r", ids).eligible, true);
-  assert.match(originalEligibility(p, base, [bot, { ...appMerge, parents: [{ sha: "a" }] }], "o/r", ids).reason, /not a verified commit/);
-  assert.match(originalEligibility(p, base, [bot, { ...appMerge, commit: { verification: { verified: false } } }], "o/r", ids).reason, /not a verified commit/);
-  assert.match(originalEligibility(p, base, [bot, appMerge], "o/r").reason, /not a verified commit/, "no App identity, no exception");
+  const sound = { sha: "m", ...appMerge };
+  const ids = { trustedRefreshes: new Set(["m"]) };
+  assert.equal(originalEligibility(p, base, [bot, sound], "o/r", ids).eligible, true);
+  assert.match(originalEligibility(p, base, [bot, { ...sound, sha: "other" }], "o/r", ids).reason, /not a verified commit/, "only commits proven to be clean refreshes");
+  assert.match(originalEligibility(p, base, [bot, { ...sound, commit: { verification: { verified: false } } }], "o/r", ids).reason, /not a verified commit/);
+  assert.match(originalEligibility(p, base, [bot, sound], "o/r").reason, /not a verified commit/, "nothing proven, no exception");
 });

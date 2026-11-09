@@ -1,6 +1,7 @@
 // Repository reads shared by every mode: file contents at exact commits, the
 // original update's own change set, and runtime-contract inputs.
 import { matchesAny } from "../../review-gate/src/glob.mjs";
+import { POLICY_PATH } from "./policy.mjs";
 import { isDockerfile, requestedTargets, resolveImageVersions, runtimeMoves, syncRuntimeFields } from "./contract.mjs";
 import { SHA, sha256 } from "./digest.mjs";
 
@@ -51,14 +52,48 @@ export async function changeSet(gh, repo, baseSha, headSha, { withContent = (p) 
 // Files among `paths` that the default branch changed between two of its
 // commits, or null when that cannot be shown completely (main was rewritten,
 // or the comparison is truncated). A rename counts for both of its names.
+// The policy file always counts: a review is bound to the policy it ran under.
 export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
   if (!SHA.test(fromBase) || !SHA.test(toBase)) throw new Error("invalid commit identity");
   if (fromBase === toBase) return [];
-  const cmp = await gh.get(`/repos/${repo}/compare/${fromBase}...${toBase}`);
+  let cmp;
+  try {
+    cmp = await gh.get(`/repos/${repo}/compare/${fromBase}...${toBase}`);
+  } catch {
+    return null;
+  }
   const files = cmp.files ?? [];
   if (cmp.status !== "ahead" || files.length >= 300) return null;
   const touched = new Set(files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)));
-  return paths.filter((p) => touched.has(p));
+  return [...new Set([...paths, POLICY_PATH])].filter((p) => touched.has(p));
+}
+
+// The controller App's update-branch merges on an original that are provably
+// harmless: committed by GitHub itself (web-flow), merging a commit already on
+// the default branch, and leaving every changed file exactly as the update
+// bot's last commit has it. Anything else returns an empty set.
+export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogin, authors }) {
+  const merges = commits.filter((c) => c.author?.login === botLogin && c.parents?.length === 2);
+  if (!merges.length) return new Set();
+  const none = new Set();
+  try {
+    for (const c of merges) {
+      if (c.committer?.login !== "web-flow") return none;
+      const cmp = await gh.get(`/repos/${repo}/compare/${c.parents[1].sha}...${baseSha}`);
+      if (!["identical", "ahead"].includes(cmp.status)) return none;
+    }
+    const tip = [...commits].reverse().find((c) => authors.includes(c.author?.login));
+    if (!tip) return none;
+    const files = (await gh.get(`/repos/${repo}/compare/${baseSha}...${head}`)).files ?? [];
+    if (files.length >= 300) return none;
+    for (const f of files) {
+      if (f.previous_filename) return none;
+      if ((await fileAt(gh, repo, f.filename, head)) !== (await fileAt(gh, repo, f.filename, tip.sha))) return none;
+    }
+  } catch {
+    return none;
+  }
+  return new Set(merges.map((c) => c.sha));
 }
 
 const needsText = (p) => isDockerfile(p) || /(^|\/)(package\.json|go\.mod)$/.test(p) || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p);

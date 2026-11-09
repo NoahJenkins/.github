@@ -66,6 +66,8 @@ export function decide(s) {
   // so only the approver token may ask; an App comment is ignored.
   if (target.mergeable_state === "dirty") {
     if (r) return out("conflict", "close-stale-replacement", `${label} conflicts with ${policy.defaultBranch}; it is closed and rebuilt after the update bot rebases the original.`);
+    // Dependabot stops rebasing a branch anyone else pushed to (the App's refresh).
+    if (!s.canAskRebase && o.refreshed) return out("needs-human", "none", `${label} conflicts with ${policy.defaultBranch}, and Dependabot no longer rebases it after the App updated its branch; a maintainer can comment \`@dependabot recreate\`.`);
     if (!s.canAskRebase) return out("conflict", "none", "Dependabot rebases conflicting updates on its own; a maintainer can comment `@dependabot rebase` to hurry it.");
     return s.marks.rebase ? out("conflict", "none", "The update bot was asked to rebase this conflicting head; waiting.") : out("conflict", "request-rebase", "Asking the update bot to rebase the conflicting head.");
   }
