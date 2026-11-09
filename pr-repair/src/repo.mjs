@@ -1,5 +1,9 @@
 // Repository reads shared by every mode: file contents at exact commits, the
 // original update's own change set, and runtime-contract inputs.
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { matchesAny } from "../../review-gate/src/glob.mjs";
 import { POLICY_PATH } from "./policy.mjs";
 import { isDockerfile, requestedTargets, resolveImageVersions, runtimeMoves, syncRuntimeFields } from "./contract.mjs";
@@ -68,13 +72,38 @@ export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
   return [...new Set([...paths, POLICY_PATH])].filter((p) => touched.has(p));
 }
 
+// Line-based three-way merge (git merge-file) of `theirs` into `ours` from
+// `base`, or null. A clean merge is not unique: Myers (merge-file's default)
+// and histogram (GitHub's merge-ort) can both succeed yet disagree, so the
+// result counts only when both algorithms in both argument orders produce the
+// same conflict-free text. Contents go to private temp files; git runs outside
+// any repository, so no repository config applies.
+export function mergeThreeWay(ours, base, theirs) {
+  const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), "pr-repair-merge-"));
+  try {
+    const f = (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); };
+    const [o, b, t] = [f("ours", ours), f("base", base), f("theirs", theirs)];
+    const results = new Set();
+    for (const algorithm of ["histogram", "myers"]) {
+      for (const [x, y] of [[o, t], [t, o]]) {
+        results.add(execFileSync("git", ["merge-file", "-p", `--diff-algorithm=${algorithm}`, x, b, y], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: dir } }));
+      }
+    }
+    return results.size === 1 ? [...results][0] : null;
+  } catch {
+    return null; // a non-zero exit is a conflict count or an error
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // The controller App's update-branch merges on an original, when provably
 // harmless: every App commit is a GitHub-committed (web-flow) two-parent merge
 // of a commit already on the default branch and no older than the bot's base,
-// no bot commit follows one, the
-// default branch has not touched the bot's files since the bot's base, and the
-// head tree is exactly that default-branch commit plus the bot's own changes
-// (every path, blob, and mode). Anything else returns an empty set.
+// no bot commit follows one, and the head tree is exactly that default-branch
+// commit plus the bot's own changes (every path, blob, and mode; a file both
+// sides changed must equal their agreed three-way merge). Anything else
+// returns an empty set.
 export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogin, authors }) {
   const none = new Set();
   const app = commits.filter((c) => c.author?.login === botLogin);
@@ -106,7 +135,17 @@ export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogi
     const paths = new Set([...tHead.keys(), ...tTip.keys(), ...tMain.keys(), ...tBotBase.keys()]);
     for (const p of paths) {
       const botChanged = tTip.get(p) !== tBotBase.get(p);
-      if (botChanged && tMain.get(p) !== tBotBase.get(p)) return none;
+      if (botChanged && tMain.get(p) !== tBotBase.get(p)) {
+        // Both sides changed this file (ark: Actions bumps share workflow
+        // files). Only a text file present everywhere with one regular mode,
+        // whose head content is exactly the conflict-free three-way merge.
+        const entries = [tHead, tTip, tMain, tBotBase].map((t) => t.get(p));
+        const modes = new Set(entries.map((e) => e?.split(" ")[0]));
+        if (entries.some((e) => !e) || modes.size !== 1 || !(modes.has("100644") || modes.has("100755"))) return none;
+        const [h, b, m, t] = [await fileAt(gh, repo, p, head), await fileAt(gh, repo, p, botBase), await fileAt(gh, repo, p, merged), await fileAt(gh, repo, p, tip.sha)];
+        if ([h, b, m, t].some((x) => x === null) || mergeThreeWay(m, b, t) !== h) return none;
+        continue;
+      }
       if (tHead.get(p) !== (botChanged ? tTip.get(p) : tMain.get(p))) return none;
     }
   } catch {

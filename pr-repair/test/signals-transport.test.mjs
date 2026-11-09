@@ -202,6 +202,26 @@ test("an App refresh counts only when the head is exactly main plus the bot's ow
   await reject({ mainChange: ["SECURITY.md", "new"], head: (t) => { const n = new Map(t); n.delete("SECURITY.md"); return n; } }, "deleting a file main added");
   await reject({ head: (t) => new Map(t).set("evil.js", "x") }, "adding content");
   await reject({ mainChange: ["package.json", "x 1.0.0\nscripts"] }, "main changed a file the bot changes");
+
+  // ark #180/#182: main (#181) and the bot changed one workflow file on
+  // different lines. The head must be exactly the three-way merge.
+  const shared = async (headCi, { mainCi = "a: checkout@7\nb: x\nc: setup-node@4\n", botCi = "a: checkout@4\nb: x\nc: setup-node@7\n" } = {}) => {
+    const gh = new FakeGitHub();
+    const ci = ".github/workflows/ci.yaml";
+    const base = gh.commit(new Map([[ci, "a: checkout@4\nb: x\nc: setup-node@4\n"], ["README.md", "r"]]), [], "base", "NoahJenkins");
+    const tip = gh.commit(new Map(gh.commits.get(base).tree).set(ci, botCi), [base], "bump setup-node", "dependabot[bot]");
+    const main = gh.commit(new Map(gh.commits.get(base).tree).set(ci, mainCi), [base], "bump checkout", "NoahJenkins");
+    gh.refs.set("main", main);
+    const merge = gh.commit(new Map(gh.commits.get(main).tree).set(ci, headCi), [tip, main], "Merge main", gh.botLogin);
+    gh.commits.get(merge).committer = "web-flow";
+    gh.refs.set("dependabot/x", merge);
+    gh.pr(1, { head: { ref: "dependabot/x", sha: merge }, base: { ref: "main", sha: base } });
+    return (await soundRefreshes(gh, gh.repo, { commits: gh.prCommits(1), head: merge, baseSha: main, botLogin: gh.botLogin, authors: ["dependabot[bot]"] })).size;
+  };
+  assert.equal(await shared("a: checkout@7\nb: x\nc: setup-node@7\n"), 1, "a clean merge of non-overlapping lines");
+  assert.equal(await shared("a: checkout@4\nb: x\nc: setup-node@7\n"), 0, "the merge undoes main's line");
+  assert.equal(await shared("a: checkout@7\nb: x\nc: setup-node@7\nrun: evil\n"), 0, "the merge adds a line");
+  assert.equal(await shared("a: checkout@7\nb: x\nc: setup-node@9\n", { mainCi: "a: checkout@4\nb: x\nc: setup-node@9\n" }), 0, "both changed the same line: a conflict is never proven");
   await reject({ botAfter: true }, "a bot commit after the App merge");
   await reject({ committer: "app[bot]" }, "not committed by GitHub");
   // A merge of a main commit older than the bot's base would undo main's later work.
@@ -230,4 +250,16 @@ test("base drift: the policy file always counts, and a failed comparison is not 
   assert.deepEqual(await driftOverlap(ok, "o/r", A, B, ["apps/api/Dockerfile"]), [".github/pr-repair.json"]);
   const broken = { get: async () => { throw Object.assign(new Error("404"), { status: 404 }); } };
   assert.equal(await driftOverlap(broken, "o/r", A, B, ["x"]), null);
+});
+
+// Review of this change: git merge-file defaults to Myers, GitHub merges with
+// histogram, and the two can both merge cleanly yet disagree (here Myers drops
+// the bot's added line). Only a result every algorithm and order agrees on counts.
+test("the three-way merge counts only when diff algorithms and argument orders agree", async () => {
+  const { mergeThreeWay } = await import("../src/repo.mjs");
+  const lines = (s) => s.split(" ").join("\n") + "\n";
+  const base = lines("} } a } a b } a a"), main = lines("} } } a a b } a a"), bot = lines("} } a } a a b } a a");
+  assert.equal(mergeThreeWay(main, base, bot), null, "Myers and histogram disagree");
+  assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a b c1")), lines("a1 b c1"));
+  assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a2 b c")), null, "a conflict");
 });
