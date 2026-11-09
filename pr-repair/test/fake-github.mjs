@@ -49,7 +49,7 @@ export class FakeGitHub {
       const v = t.get(path2);
       return { type: "file", content: (Buffer.isBuffer(v) ? v : Buffer.from(v)).toString("base64") };
     }
-    if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: "100644", size: c.length })) };
+    if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: this.commits.get(m[1]).modes?.[path2] ?? "100644", size: c.length, sha: sha(`blob ${c}`) })) };
     if ((m = p.match(new RegExp(`^${r}/issues/comments/(\\d+)$`)))) return structuredClone(this.comments.find((c) => c.id === Number(m[1])));
     if (p === `/repos/${this.repo}`) return { default_branch: "main" };
     if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)/logs$`)))) return `2026-11-07T00:00:00Z ##[group]Run pnpm test\nFAIL src/a.test.ts\nTypeError: hono.newApi is not a function (job ${m[1]})\n`;

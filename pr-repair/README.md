@@ -61,8 +61,10 @@ recreate`).
   in an ecosystem the policy lists, with every commit a verified commit by that
   bot. The one exception is the controller App's update-branch merge, and only
   when it is provably harmless: committed by GitHub (`web-flow`), its second
-  parent already on the default branch, and every changed file exactly as the
-  bot's last commit has it. `non-major` ecosystems reject majors unless `securityMajors` is set and
+  parent already on the default branch, no bot commit after it, the default
+  branch has not touched the bot's files, and the head tree is exactly that
+  default-branch commit plus the bot's own changes (every path, blob, and
+  mode). An App commit that cannot be proven sound goes to a maintainer. `non-major` ecosystems reject majors unless `securityMajors` is set and
   the body says it is a security fix.
 - Replacements: the controller App's own pull request on `pr-repair/<n>` whose
   body carries its provenance and whose commits are all verified App or bot

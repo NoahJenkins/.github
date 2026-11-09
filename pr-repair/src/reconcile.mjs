@@ -355,10 +355,8 @@ export async function runPlan(ctx) {
       rows.push({ number: o.number, target: target.number, head: target.head.sha, state: d.state, detail: d.detail });
       // Every update gets its state on the pull request. Out of scope it is
       // informational (neutral), so it never blocks another workflow's merge.
-      if (ctx.enabled && !eligibility.eligible && o.head.repo?.full_name === repo) {
-        await setStatusCheck(ctx, o.head.sha, d, o.number, { conclusion: "neutral" });
-      } else if (ctx.enabled && eligibility.eligible) {
-        await setStatusCheck(ctx, target.head.sha, d, o.number);
+      if (ctx.enabled && (eligibility.eligible || o.head.repo?.full_name === repo)) {
+        await setStatusCheck(ctx, target.head.sha, d, o.number, d.state === "unsupported-scope" ? { conclusion: "neutral" } : {});
         if (target !== o && !r?.merged) await setStatusCheck(ctx, o.head.sha, { ...d, detail: `Replacement #${target.number}: ${d.detail}` }, o.number);
       }
     } catch (e) {

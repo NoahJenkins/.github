@@ -68,32 +68,45 @@ export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
   return [...new Set([...paths, POLICY_PATH])].filter((p) => touched.has(p));
 }
 
-// The controller App's update-branch merges on an original that are provably
-// harmless: committed by GitHub itself (web-flow), merging a commit already on
-// the default branch, and leaving every changed file exactly as the update
-// bot's last commit has it. Anything else returns an empty set.
+// The controller App's update-branch merges on an original, when provably
+// harmless: every App commit is a GitHub-committed (web-flow) two-parent merge
+// of a commit already on the default branch, no bot commit follows one, the
+// default branch has not touched the bot's files since the bot's base, and the
+// head tree is exactly that default-branch commit plus the bot's own changes
+// (every path, blob, and mode). Anything else returns an empty set.
 export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogin, authors }) {
-  const merges = commits.filter((c) => c.author?.login === botLogin && c.parents?.length === 2);
-  if (!merges.length) return new Set();
   const none = new Set();
+  const app = commits.filter((c) => c.author?.login === botLogin);
+  if (!app.length) return none;
   try {
-    for (const c of merges) {
-      if (c.committer?.login !== "web-flow") return none;
+    const bot = commits.filter((c) => authors.includes(c.author?.login));
+    const tip = bot.at(-1);
+    if (!tip || app.length + bot.length !== commits.length) return none;
+    if (commits.indexOf(tip) > commits.indexOf(app[0])) return none;
+    for (const c of app) {
+      if (c.parents?.length !== 2 || c.committer?.login !== "web-flow") return none;
       const cmp = await gh.get(`/repos/${repo}/compare/${c.parents[1].sha}...${baseSha}`);
       if (!["identical", "ahead"].includes(cmp.status)) return none;
     }
-    const tip = [...commits].reverse().find((c) => authors.includes(c.author?.login));
-    if (!tip) return none;
-    const files = (await gh.get(`/repos/${repo}/compare/${baseSha}...${head}`)).files ?? [];
-    if (files.length >= 300) return none;
-    for (const f of files) {
-      if (f.previous_filename) return none;
-      if ((await fileAt(gh, repo, f.filename, head)) !== (await fileAt(gh, repo, f.filename, tip.sha))) return none;
+    const merged = app.at(-1).parents[1].sha;
+    const botBase = (await gh.get(`/repos/${repo}/compare/${baseSha}...${tip.sha}`)).merge_base_commit?.sha;
+    if (!SHA.test(botBase || "")) return none;
+    const tree = async (sha) => {
+      const t = await gh.get(`/repos/${repo}/git/trees/${sha}?recursive=1`);
+      if (t.truncated) throw new Error("tree truncated");
+      return new Map(t.tree.filter((e) => e.type !== "tree").map((e) => [e.path, `${e.mode} ${e.sha}`]));
+    };
+    const [tHead, tTip, tMain, tBotBase] = [await tree(head), await tree(tip.sha), await tree(merged), await tree(botBase)];
+    const paths = new Set([...tHead.keys(), ...tTip.keys(), ...tMain.keys(), ...tBotBase.keys()]);
+    for (const p of paths) {
+      const botChanged = tTip.get(p) !== tBotBase.get(p);
+      if (botChanged && tMain.get(p) !== tBotBase.get(p)) return none;
+      if (tHead.get(p) !== (botChanged ? tTip.get(p) : tMain.get(p))) return none;
     }
   } catch {
     return none;
   }
-  return new Set(merges.map((c) => c.sha));
+  return new Set(app.map((c) => c.sha));
 }
 
 const needsText = (p) => isDockerfile(p) || /(^|\/)(package\.json|go\.mod)$/.test(p) || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p);

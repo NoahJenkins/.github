@@ -33,6 +33,9 @@ export function decide(s) {
   const { policy, original: o, replacement: r, usage, limits } = s;
   if (!s.enabled) return out("disabled");
   if (s.exclusiveActive) return out("missing-configuration", "none", s.exclusiveDetail ?? "Another dependency controller is active for this repository. Disable it before pr-repair takes over, so two controllers never race on one pull request.");
+  // The App pushed here but the push cannot be proven a clean refresh, and
+  // Dependabot no longer rebases a branch someone else pushed to.
+  if (!o.eligibility.eligible && o.refreshed) return out("needs-human", "none", `#${o.pr.number}: ${o.eligibility.reason}; its branch has App commits that could not be verified as a clean update from ${policy.defaultBranch}. A maintainer can comment \`@dependabot recreate\`.`);
   if (!o.eligibility.eligible) return out("unsupported-scope", "none", o.eligibility.reason);
 
   // Replacement lifecycle first: it may be merged, stale, or foreign.

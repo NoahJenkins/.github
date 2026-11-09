@@ -548,7 +548,9 @@ test("an original refreshed by the App with a merge from main stays eligible", a
   w.gh.pulls.get(181).head.sha = tampered;
   w.ci(tampered, "success");
   const q = await runPlan({ ...w.ctx, now: NOW() });
-  assert.match(q.rows.find((x) => x.number === 181).detail, /not a verified commit/);
+  assert.equal(q.rows.find((x) => x.number === 181).state, "needs-human");
+  assert.match(q.rows.find((x) => x.number === 181).detail, /@dependabot recreate/);
+  assert.equal(w.gh.checks.filter((c) => c.name === STATUS_CHECK && c.head_sha === tampered).at(-1).conclusion, "action_required");
 });
 
 test("a green original behind main is brought up to date by the App once", async (t) => {

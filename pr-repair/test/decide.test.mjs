@@ -229,6 +229,13 @@ test("a repair that proposed no change ends paid work on that head", () => {
 
 // ark: protection requires up-to-date branches, pr-repair merges originals, and
 // no account Dependabot obeys is configured. #180-#183 sat behind main for days.
+test("an original the App touched that cannot be proven sound goes to a maintainer, not out of scope", () => {
+  const o = { ...snap().original, eligibility: { eligible: false, reason: "a commit is not a verified commit by the update bot" }, refreshed: true };
+  const d = decide(snap({ original: o }));
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  assert.match(d.detail, /@dependabot recreate/);
+});
+
 test("a refreshed original that later conflicts goes to a maintainer: Dependabot no longer rebases it", () => {
   const dirty = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "dirty" }), refreshed: true };
   const d = decide(snap({ original: dirty }));
