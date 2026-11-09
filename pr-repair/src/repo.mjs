@@ -48,6 +48,19 @@ export async function changeSet(gh, repo, baseSha, headSha, { withContent = (p) 
   return { mergeBase, status: cmp.status, behindBy: cmp.behind_by, changes };
 }
 
+// Files among `paths` that the default branch changed between two of its
+// commits, or null when that cannot be shown completely (main was rewritten,
+// or the comparison is truncated). A rename counts for both of its names.
+export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
+  if (!SHA.test(fromBase) || !SHA.test(toBase)) throw new Error("invalid commit identity");
+  if (fromBase === toBase) return [];
+  const cmp = await gh.get(`/repos/${repo}/compare/${fromBase}...${toBase}`);
+  const files = cmp.files ?? [];
+  if (cmp.status !== "ahead" || files.length >= 300) return null;
+  const touched = new Set(files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)));
+  return paths.filter((p) => touched.has(p));
+}
+
 const needsText = (p) => isDockerfile(p) || /(^|\/)(package\.json|go\.mod)$/.test(p) || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p);
 
 // The original update's request: its runtime image moves and concrete targets.

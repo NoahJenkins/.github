@@ -164,3 +164,14 @@ test("finding files come from current-head Codex comments and the controller's r
   assert.equal(findingFiles({ codex: "pass", reviewComments: [], review: { verdict: "fail", findings: [{ message: "x" }] }, head }), null);
   assert.deepEqual(findingFiles({ codex: "pass", reviewComments: comments, review: null, head }), []);
 });
+
+test("base drift: only files main changed since the review, and only when main moved forward", async () => {
+  const { driftOverlap } = await import("../src/repo.mjs");
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const gh = (cmp) => ({ get: async () => cmp });
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: ".github/workflows/x.yml" }] }), "o/r", A, B, ["apps/api/Dockerfile"]), []);
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: "apps/api/Dockerfile" }] }), "o/r", A, B, ["apps/api/Dockerfile"]), ["apps/api/Dockerfile"]);
+  assert.equal(await driftOverlap(gh({ status: "diverged", files: [] }), "o/r", A, B, ["x"]), null, "a rewritten main is never trusted");
+  assert.equal(await driftOverlap(gh({ status: "ahead", files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) }), "o/r", A, B, ["x"]), null);
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: "y", previous_filename: "x" }] }), "o/r", A, B, ["x"]), ["x"], "a rename away from a reviewed file overlaps");
+});

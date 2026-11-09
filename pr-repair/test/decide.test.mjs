@@ -226,3 +226,26 @@ test("a repair that proposed no change ends paid work on that head", () => {
   const r = decide(snap({ original: { ...snap().original, ci: red }, marks: { rerun: true }, emptyRepairOnHead: true }));
   assert.deepEqual([r.state, r.action], ["needs-human", "none"]);
 });
+
+// ark: protection requires up-to-date branches, pr-repair merges originals, and
+// no account Dependabot obeys is configured. #180-#183 sat behind main for days.
+test("a green, behind original with no rebase authority is refreshed by the App once per head", () => {
+  const behind = { ...snap().original, pr: pr(180, H("1"), { mergeable_state: "behind" }), ci: green };
+  assert.equal(decide(snap({ original: behind })).action, "refresh");
+  assert.notEqual(decide(snap({ original: behind, marks: { refresh: true } })).action, "refresh");
+  // Never where another workflow owns the original's merge.
+  const p = policy((r) => ({ ...r, merge: { ...r.merge, originals: false } }));
+  assert.notEqual(decide(snap({ policy: p, limits: p.repair.limits, original: behind })).action, "refresh");
+});
+
+test("an original may carry the App's own verified merge-from-main commits, nothing else", () => {
+  const p = policy();
+  const base = { state: "open", draft: false, user: { login: "dependabot[bot]", type: "Bot" }, head: { ref: "dependabot/npm_and_yarn/x", repo: { full_name: "o/r" } }, base: { ref: "main" }, changed_files: 2, body: "", title: "bump x from 1.0.0 to 1.0.1" };
+  const bot = { author: { login: "dependabot[bot]" }, commit: { verification: { verified: true } }, parents: [{ sha: "a" }] };
+  const appMerge = { author: { login: "pr-repair-app[bot]" }, commit: { verification: { verified: true } }, parents: [{ sha: "a" }, { sha: "b" }] };
+  const ids = { botLogin: "pr-repair-app[bot]" };
+  assert.equal(originalEligibility(p, base, [bot, appMerge], "o/r", ids).eligible, true);
+  assert.match(originalEligibility(p, base, [bot, { ...appMerge, parents: [{ sha: "a" }] }], "o/r", ids).reason, /not a verified commit/);
+  assert.match(originalEligibility(p, base, [bot, { ...appMerge, commit: { verification: { verified: false } } }], "o/r", ids).reason, /not a verified commit/);
+  assert.match(originalEligibility(p, base, [bot, appMerge], "o/r").reason, /not a verified commit/, "no App identity, no exception");
+});

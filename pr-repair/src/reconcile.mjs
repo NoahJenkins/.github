@@ -5,7 +5,7 @@ import { digest } from "./digest.mjs";
 import { REPLACEMENT_PREFIX, originalEligibility, parseProvenance, replacementEligibility } from "./eligibility.mjs";
 import { encodeLedger, mark, marked, prune, readLedger, reserve, RESERVATION_TTL, transition, usage } from "./ledger.mjs";
 import { inferenceGaps } from "./policy.mjs";
-import { fieldFilesAt, originalRequest, syncFor } from "./repo.mjs";
+import { driftOverlap, fieldFilesAt, originalRequest, syncFor } from "./repo.mjs";
 import { STATUS_CHECK, ciState, classifyThreads, codexState, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
 
 export const STATE_LABEL = "pr-repair";
@@ -247,7 +247,7 @@ export async function runPlan(ctx) {
     try {
       const o = await gh.get(`/repos/${repo}/pulls/${listed.number}`);
       const oCommits = await gh.paginate(`/repos/${repo}/pulls/${o.number}/commits`, { max: 250 });
-      const eligibility = originalEligibility(policy, o, oCommits, repo);
+      const eligibility = originalEligibility(policy, o, oCommits, repo, { botLogin: ctx.botLogin });
       if (eligibility.eligible && ledger.legacy[String(o.number)] === undefined && policy.legacy.attemptChecks.length) {
         ledger = { ...ledger, legacy: { ...ledger.legacy, [String(o.number)]: await legacyAttempts(ctx, o.head.sha) } };
       }
@@ -302,6 +302,13 @@ export async function runPlan(ctx) {
         }
         if (r && !r.merged) {
           r.review = reviewResult(checks, { appId: ctx.appId, head: target.head.sha, ledger });
+          // A review stays current while main only changes files this
+          // replacement does not (Metriks #186: pin-only workflow edits).
+          if (r.review && r.review.base !== ctx.baseSha) {
+            const files = (await gh.get(`/repos/${repo}/compare/${ctx.baseSha}...${target.head.sha}`)).files ?? [];
+            const overlap = files.length < 300 ? await driftOverlap(gh, repo, r.review.base, ctx.baseSha, files.map((f) => f.filename)) : null;
+            if (overlap?.length === 0) r.review = { ...r.review, base: ctx.baseSha, reviewedBase: r.review.base };
+          }
           r.codex = policy.review.requireCodex ? await codexState(gh, repo, target.number, target.head.sha) : null;
           if (r.codex === "findings" || r.review?.verdict === "fail") {
             const reviewComments = r.codex === "findings" ? await gh.paginate(`/repos/${repo}/pulls/${target.number}/comments`) : [];
@@ -345,7 +352,8 @@ export async function runPlan(ctx) {
         if (markName) ledger = mark(ledger, `${o.number}:${target.head.sha}:${markName}`, ctx.now);
       }
       rows.push({ number: o.number, target: target.number, head: target.head.sha, state: d.state, detail: d.detail });
-      if (ctx.enabled && eligibility.eligible) {
+      // Every update gets its state on the pull request, in scope or not.
+      if (ctx.enabled) {
         await setStatusCheck(ctx, target.head.sha, d, o.number);
         if (target !== o && !r?.merged) await setStatusCheck(ctx, o.head.sha, { ...d, detail: `Replacement #${target.number}: ${d.detail}` }, o.number);
       }

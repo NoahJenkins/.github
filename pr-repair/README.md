@@ -20,14 +20,22 @@ CI fails on a Dependabot PR (or review finds a blocker)
                                                             ▼
      obsolete agent threads resolved ─▶ production interlock ─▶ approval per policy
                                                             ▼
-     native auto-merge with expectedHeadOid ─▶ existing release workflow
+     native auto-merge (or a direct merge once mergeable), bound to the head ─▶ existing release workflow
                                                             ▼
      original closed only if its head still matches the replacement's root
 ```
 
 Failed checks or blocking findings on the replacement re-enter repair within
-the same budget. Every pull request always shows one named state: on its
-`pr-repair` check run, on the `pr-repair status` issue, and in the run summary.
+the same budget. An independent review stays current while the default branch
+only changes files the replacement does not change; otherwise it is redone.
+Every update pull request, in scope or not, always shows one named state: on
+its `pr-repair` check run, on the `pr-repair status` issue, and in the run
+summary.
+
+Where protection requires an up-to-date branch and pr-repair merges originals,
+a behind original is rebased by asking the update bot (with the approver token)
+or, without one, by the App updating the branch from the default branch once
+per head.
 
 | State | Meaning |
 | --- | --- |
@@ -48,7 +56,8 @@ the same budget. Every pull request always shows one named state: on its
 - Originals: open, same-repository pull requests from a bot listed in
   `eligibility.authors` (default `dependabot[bot]`), targeting the default branch,
   in an ecosystem the policy lists, with every commit a verified commit by that
-  bot. `non-major` ecosystems reject majors unless `securityMajors` is set and
+  bot. The one exception is the controller App's own verified merge of the
+  default branch (two parents), made when it brings a behind original up to date. `non-major` ecosystems reject majors unless `securityMajors` is set and
   the body says it is a security fix.
 - Replacements: the controller App's own pull request on `pr-repair/<n>` whose
   body carries its provenance and whose commits are all verified App or bot

@@ -74,6 +74,9 @@ export function decide(s) {
       if (!s.marks.refresh) return out("waiting-ci", "refresh", `${label} is behind ${policy.defaultBranch}; refreshing once for this head.`);
     } else if (policy.merge.originals && s.canAskRebase && !s.marks.rebase && t.ci.state === "success") {
       return out("waiting-ci", "request-rebase", `${label} is behind ${policy.defaultBranch}; asking the update bot to rebase once for this head.`);
+    } else if (policy.merge.originals && !s.canAskRebase && !s.marks.refresh && t.ci.state === "success") {
+      // No account Dependabot obeys: the App merges the default branch in (ark).
+      return out("waiting-ci", "refresh", `${label} is behind ${policy.defaultBranch}; updating its branch once for this head.`);
     }
     // Otherwise evaluate the head as it is: a failing head can still be repaired,
     // and the replacement branch is refreshed by the App.

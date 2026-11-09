@@ -74,13 +74,20 @@ export class FakeGitHub {
     if (p === `${r}/actions/runs`) return [{ id: 555, head_sha: query.head_sha, conclusion: "failure" }];
     throw new Error(`fake paginate not implemented: ${path}`);
   }
+  // Like GitHub: every commit reachable from the head and not from main.
   prCommits(n) {
     const pr = this.pulls.get(n);
+    const onMain = new Set();
+    for (let c = this.refs.get("main"); c; c = this.commits.get(c)?.parents[0]) onMain.add(c);
     const out = [];
-    for (let c = pr.head.sha; c && c !== pr.base.sha && this.commits.has(c); c = this.commits.get(c).parents[0]) {
-      out.unshift({ sha: c, author: { login: this.commits.get(c).author }, commit: { verification: { verified: true } } });
-      if (this.commits.get(c).parents[0] === this.refs.get("main")) break;
-    }
+    const seen = new Set();
+    const walk = (c) => {
+      if (!c || seen.has(c) || onMain.has(c) || !this.commits.has(c)) return;
+      seen.add(c);
+      for (const p of this.commits.get(c).parents) walk(p);
+      out.push({ sha: c, author: { login: this.commits.get(c).author }, commit: { verification: { verified: true } }, parents: this.commits.get(c).parents.map((sha) => ({ sha })) });
+    };
+    walk(pr.head.sha);
     return out;
   }
   compare(base, head) {
