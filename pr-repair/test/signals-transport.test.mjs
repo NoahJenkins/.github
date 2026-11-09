@@ -204,6 +204,20 @@ test("an App refresh counts only when the head is exactly main plus the bot's ow
   await reject({ mainChange: ["package.json", "x 1.0.0\nscripts"] }, "main changed a file the bot changes");
   await reject({ botAfter: true }, "a bot commit after the App merge");
   await reject({ committer: "app[bot]" }, "not committed by GitHub");
+  // A merge of a main commit older than the bot's base would undo main's later work.
+  {
+    const gh = new FakeGitHub();
+    const p0 = gh.commit(new Map([["package.json", "x 1.0.0"], ["auth.js", "old"]]), [], "P", "NoahJenkins");
+    const o = gh.commit(new Map(gh.commits.get(p0).tree).set("auth.js", "fixed").set("SECURITY.md", "s"), [p0], "O", "NoahJenkins");
+    const tip = gh.commit(new Map(gh.commits.get(o).tree).set("package.json", "x 1.0.1"), [o], "bump", "dependabot[bot]");
+    gh.refs.set("main", o);
+    const forged = gh.commit(new Map(gh.commits.get(p0).tree).set("package.json", "x 1.0.1"), [tip, p0], "Merge", gh.botLogin);
+    gh.commits.get(forged).committer = "web-flow";
+    gh.refs.set("dependabot/x", forged);
+    gh.pr(1, { head: { ref: "dependabot/x", sha: forged }, base: { ref: "main", sha: o } });
+    const set = await soundRefreshes(gh, gh.repo, { commits: gh.prCommits(1), head: forged, baseSha: o, botLogin: gh.botLogin, authors: ["dependabot[bot]"] });
+    assert.equal(set.size, 0, "merging a main commit older than the bot's base");
+  }
   const side = new FakeGitHub();
   const stray = side.commit(new Map([["x", "y"]]), [], "x", "NoahJenkins");
   await reject({ mergeParent: stray }, "second parent is not on main");

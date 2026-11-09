@@ -70,7 +70,8 @@ export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
 
 // The controller App's update-branch merges on an original, when provably
 // harmless: every App commit is a GitHub-committed (web-flow) two-parent merge
-// of a commit already on the default branch, no bot commit follows one, the
+// of a commit already on the default branch and no older than the bot's base,
+// no bot commit follows one, the
 // default branch has not touched the bot's files since the bot's base, and the
 // head tree is exactly that default-branch commit plus the bot's own changes
 // (every path, blob, and mode). Anything else returns an empty set.
@@ -91,6 +92,11 @@ export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogi
     const merged = app.at(-1).parents[1].sha;
     const botBase = (await gh.get(`/repos/${repo}/compare/${baseSha}...${tip.sha}`)).merge_base_commit?.sha;
     if (!SHA.test(botBase || "")) return none;
+    // History only moves forward: the bot's base and every earlier merged
+    // commit are ancestors of the last merged one, so nothing on the default
+    // branch since the bot's base can be undone.
+    const forward = async (older) => ["identical", "ahead"].includes((await gh.get(`/repos/${repo}/compare/${older}...${merged}`)).status);
+    for (const sha of [botBase, ...app.map((c) => c.parents[1].sha)]) if (!(await forward(sha))) return none;
     const tree = async (sha) => {
       const t = await gh.get(`/repos/${repo}/git/trees/${sha}?recursive=1`);
       if (t.truncated) throw new Error("tree truncated");
