@@ -251,3 +251,15 @@ test("base drift: the policy file always counts, and a failed comparison is not 
   const broken = { get: async () => { throw Object.assign(new Error("404"), { status: 404 }); } };
   assert.equal(await driftOverlap(broken, "o/r", A, B, ["x"]), null);
 });
+
+// Review of this change: git merge-file defaults to Myers, GitHub merges with
+// histogram, and the two can both merge cleanly yet disagree (here Myers drops
+// the bot's added line). Only a result every algorithm and order agrees on counts.
+test("the three-way merge counts only when diff algorithms and argument orders agree", async () => {
+  const { mergeThreeWay } = await import("../src/repo.mjs");
+  const lines = (s) => s.split(" ").join("\n") + "\n";
+  const base = lines("} } a } a b } a a"), main = lines("} } } a a b } a a"), bot = lines("} } a } a a b } a a");
+  assert.equal(mergeThreeWay(main, base, bot), null, "Myers and histogram disagree");
+  assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a b c1")), lines("a1 b c1"));
+  assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a2 b c")), null, "a conflict");
+});

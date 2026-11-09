@@ -73,13 +73,23 @@ export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
 }
 
 // Line-based three-way merge (git merge-file) of `theirs` into `ours` from
-// `base`; null on any conflict. Contents are written to private temp files only.
+// `base`, or null. A clean merge is not unique: Myers (merge-file's default)
+// and histogram (GitHub's merge-ort) can both succeed yet disagree, so the
+// result counts only when both algorithms in both argument orders produce the
+// same conflict-free text. Contents go to private temp files; git runs outside
+// any repository, so no repository config applies.
 export function mergeThreeWay(ours, base, theirs) {
   const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), "pr-repair-merge-"));
   try {
     const f = (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); };
-    const args = ["merge-file", "-p", f("ours", ours), f("base", base), f("theirs", theirs)];
-    return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    const [o, b, t] = [f("ours", ours), f("base", base), f("theirs", theirs)];
+    const results = new Set();
+    for (const algorithm of ["histogram", "myers"]) {
+      for (const [x, y] of [[o, t], [t, o]]) {
+        results.add(execFileSync("git", ["merge-file", "-p", `--diff-algorithm=${algorithm}`, x, b, y], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: dir } }));
+      }
+    }
+    return results.size === 1 ? [...results][0] : null;
   } catch {
     return null; // a non-zero exit is a conflict count or an error
   } finally {
@@ -90,10 +100,10 @@ export function mergeThreeWay(ours, base, theirs) {
 // The controller App's update-branch merges on an original, when provably
 // harmless: every App commit is a GitHub-committed (web-flow) two-parent merge
 // of a commit already on the default branch and no older than the bot's base,
-// no bot commit follows one, the
-// default branch has not touched the bot's files since the bot's base, and the
-// head tree is exactly that default-branch commit plus the bot's own changes
-// (every path, blob, and mode). Anything else returns an empty set.
+// no bot commit follows one, and the head tree is exactly that default-branch
+// commit plus the bot's own changes (every path, blob, and mode; a file both
+// sides changed must equal their agreed three-way merge). Anything else
+// returns an empty set.
 export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogin, authors }) {
   const none = new Set();
   const app = commits.filter((c) => c.author?.login === botLogin);
