@@ -12,7 +12,7 @@ import { NO_CHANGE } from "./decide.mjs";
 import { SHA, digest, sanitizeLog, seal, verifySeal } from "./digest.mjs";
 import { REPLACEMENT_PREFIX } from "./eligibility.mjs";
 import { transition } from "./ledger.mjs";
-import { changeSet, fieldFilesAt, fileAt, originalRequest, treeAt } from "./repo.mjs";
+import { changeSet, driftOverlap, fieldFilesAt, fileAt, originalRequest, treeAt } from "./repo.mjs";
 import { findStateIssue, loadLedger, saveLedger } from "./reconcile.mjs";
 import { REVIEW_CHECK, failedJobIds } from "./signals.mjs";
 import { runOpenAI, TransportError } from "./transport-openai.mjs";
@@ -26,11 +26,15 @@ export function checkTask(task, policy) {
   return task;
 }
 
-async function assertUnchanged(gh, repo, policy, task) {
+// driftPaths: a review stays publishable while main only changes other files.
+async function assertUnchanged(gh, repo, policy, task, { driftPaths = null } = {}) {
   const pr = await gh.get(`/repos/${repo}/pulls/${task.target}`);
   const def = await gh.get(`/repos/${repo}/git/ref/heads/${policy.defaultBranch}`);
   if (pr.state !== "open" || pr.head.sha !== task.head) throw new Error(`#${task.target} head changed since the reservation`);
-  if (def.object.sha !== task.base) throw new Error(`${policy.defaultBranch} moved since the reservation`);
+  if (def.object.sha !== task.base) {
+    const overlap = driftPaths ? await driftOverlap(gh, repo, task.base, def.object.sha, driftPaths) : null;
+    if (overlap?.length !== 0) throw new Error(`${policy.defaultBranch} moved since the reservation${overlap?.length ? ` and changed ${overlap.join(", ")}` : ""}`);
+  }
   return pr;
 }
 
@@ -211,7 +215,8 @@ export async function runPublish(ctx, task, { proposalDir, validatedDir }) {
     return { published: false, note };
   };
   try {
-    await assertUnchanged(gh, repo, policy, task);
+    const driftPaths = task.kind === "review" ? (await changeSet(gh, repo, task.base, task.head, { withContent: () => false })).changes.map((c) => c.path) : null;
+    await assertUnchanged(gh, repo, policy, task, { driftPaths });
   } catch (e) {
     return failWith(e.message);
   }

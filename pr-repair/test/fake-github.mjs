@@ -49,7 +49,7 @@ export class FakeGitHub {
       const v = t.get(path2);
       return { type: "file", content: (Buffer.isBuffer(v) ? v : Buffer.from(v)).toString("base64") };
     }
-    if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: "100644", size: c.length })) };
+    if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: this.commits.get(m[1]).modes?.[path2] ?? "100644", size: c.length, sha: sha(`blob ${c}`) })) };
     if ((m = p.match(new RegExp(`^${r}/issues/comments/(\\d+)$`)))) return structuredClone(this.comments.find((c) => c.id === Number(m[1])));
     if (p === `/repos/${this.repo}`) return { default_branch: "main" };
     if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)/logs$`)))) return `2026-11-07T00:00:00Z ##[group]Run pnpm test\nFAIL src/a.test.ts\nTypeError: hono.newApi is not a function (job ${m[1]})\n`;
@@ -74,17 +74,34 @@ export class FakeGitHub {
     if (p === `${r}/actions/runs`) return [{ id: 555, head_sha: query.head_sha, conclusion: "failure" }];
     throw new Error(`fake paginate not implemented: ${path}`);
   }
+  // Like GitHub: every commit reachable from the head and not from main.
   prCommits(n) {
     const pr = this.pulls.get(n);
+    const onMain = new Set();
+    for (let c = this.refs.get("main"); c; c = this.commits.get(c)?.parents[0]) onMain.add(c);
     const out = [];
-    for (let c = pr.head.sha; c && c !== pr.base.sha && this.commits.has(c); c = this.commits.get(c).parents[0]) {
-      out.unshift({ sha: c, author: { login: this.commits.get(c).author }, commit: { verification: { verified: true } } });
-      if (this.commits.get(c).parents[0] === this.refs.get("main")) break;
-    }
+    const seen = new Set();
+    const walk = (c) => {
+      if (!c || seen.has(c) || onMain.has(c) || !this.commits.has(c)) return;
+      seen.add(c);
+      for (const p of this.commits.get(c).parents) walk(p);
+      out.push({ sha: c, author: { login: this.commits.get(c).author }, committer: { login: this.commits.get(c).committer ?? this.commits.get(c).author }, commit: { verification: { verified: true } }, parents: this.commits.get(c).parents.map((sha) => ({ sha })) });
+    };
+    walk(pr.head.sha);
     return out;
   }
   compare(base, head) {
-    const ancestors = (s) => { const set = []; for (let c = s; c; c = this.commits.get(c)?.parents[0]) set.push(c); return set; };
+    // Breadth-first over all parents, so a merge commit's merge base is right.
+    const ancestors = (s) => {
+      const out = [];
+      for (let queue = [s]; queue.length;) {
+        const c = queue.shift();
+        if (!c || out.includes(c) || !this.commits.has(c)) continue;
+        out.push(c);
+        queue.push(...this.commits.get(c).parents);
+      }
+      return out;
+    };
     const a = ancestors(base);
     const mergeBase = ancestors(head).find((c) => a.includes(c));
     const before = this.commits.get(mergeBase).tree;

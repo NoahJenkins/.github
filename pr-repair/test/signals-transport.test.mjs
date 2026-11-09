@@ -164,3 +164,70 @@ test("finding files come from current-head Codex comments and the controller's r
   assert.equal(findingFiles({ codex: "pass", reviewComments: [], review: { verdict: "fail", findings: [{ message: "x" }] }, head }), null);
   assert.deepEqual(findingFiles({ codex: "pass", reviewComments: comments, review: null, head }), []);
 });
+
+test("base drift: only files main changed since the review, and only when main moved forward", async () => {
+  const { driftOverlap } = await import("../src/repo.mjs");
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const gh = (cmp) => ({ get: async () => cmp });
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: ".github/workflows/x.yml" }] }), "o/r", A, B, ["apps/api/Dockerfile"]), []);
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: "apps/api/Dockerfile" }] }), "o/r", A, B, ["apps/api/Dockerfile"]), ["apps/api/Dockerfile"]);
+  assert.equal(await driftOverlap(gh({ status: "diverged", files: [] }), "o/r", A, B, ["x"]), null, "a rewritten main is never trusted");
+  assert.equal(await driftOverlap(gh({ status: "ahead", files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) }), "o/r", A, B, ["x"]), null);
+  assert.deepEqual(await driftOverlap(gh({ status: "ahead", files: [{ filename: "y", previous_filename: "x" }] }), "o/r", A, B, ["x"]), ["x"], "a rename away from a reviewed file overlaps");
+});
+
+test("an App refresh counts only when the head is exactly main plus the bot's own changes", async () => {
+  const { soundRefreshes } = await import("../src/repo.mjs");
+  const { FakeGitHub } = await import("./fake-github.mjs");
+  const make = ({ mainChange = ["SECURITY.md", "fixed"], head = (t) => t, botAfter = false, committer = "web-flow", mergeParent = null } = {}) => {
+    const gh = new FakeGitHub();
+    const base = gh.commit(new Map([["package.json", "x 1.0.0"], ["auth.js", "old"]]), [], "base", "NoahJenkins");
+    const tip = gh.commit(new Map([["package.json", "x 1.0.1"], ["auth.js", "old"]]), [base], "bump", "dependabot[bot]");
+    const mainTree = new Map(gh.commits.get(base).tree).set(...mainChange);
+    const main = gh.commit(mainTree, [base], "main", "NoahJenkins");
+    gh.refs.set("main", main);
+    const clean = new Map(mainTree).set("package.json", "x 1.0.1");
+    const merge = gh.commit(head(clean), [tip, mergeParent ?? main], "Merge main", gh.botLogin);
+    gh.commits.get(merge).committer = committer;
+    let last = merge;
+    if (botAfter) last = gh.commit(new Map(head(clean)).set("evil.js", "x"), [merge], "bump", "dependabot[bot]");
+    gh.refs.set("dependabot/x", last);
+    gh.pr(1, { head: { ref: "dependabot/x", sha: last }, base: { ref: "main", sha: base } });
+    return { gh, args: { commits: gh.prCommits(1), head: last, baseSha: main, botLogin: gh.botLogin, authors: ["dependabot[bot]"] }, merge };
+  };
+  const ok = make();
+  assert.deepEqual([...(await soundRefreshes(ok.gh, ok.gh.repo, ok.args))], [ok.merge], "a clean update-branch merge");
+  const reject = async (opts, why) => { const w = make(opts); assert.equal((await soundRefreshes(w.gh, w.gh.repo, w.args)).size, 0, why); };
+  await reject({ mainChange: ["auth.js", "fixed"], head: (t) => new Map(t).set("auth.js", "old") }, "reverting a file main changed");
+  await reject({ mainChange: ["SECURITY.md", "new"], head: (t) => { const n = new Map(t); n.delete("SECURITY.md"); return n; } }, "deleting a file main added");
+  await reject({ head: (t) => new Map(t).set("evil.js", "x") }, "adding content");
+  await reject({ mainChange: ["package.json", "x 1.0.0\nscripts"] }, "main changed a file the bot changes");
+  await reject({ botAfter: true }, "a bot commit after the App merge");
+  await reject({ committer: "app[bot]" }, "not committed by GitHub");
+  // A merge of a main commit older than the bot's base would undo main's later work.
+  {
+    const gh = new FakeGitHub();
+    const p0 = gh.commit(new Map([["package.json", "x 1.0.0"], ["auth.js", "old"]]), [], "P", "NoahJenkins");
+    const o = gh.commit(new Map(gh.commits.get(p0).tree).set("auth.js", "fixed").set("SECURITY.md", "s"), [p0], "O", "NoahJenkins");
+    const tip = gh.commit(new Map(gh.commits.get(o).tree).set("package.json", "x 1.0.1"), [o], "bump", "dependabot[bot]");
+    gh.refs.set("main", o);
+    const forged = gh.commit(new Map(gh.commits.get(p0).tree).set("package.json", "x 1.0.1"), [tip, p0], "Merge", gh.botLogin);
+    gh.commits.get(forged).committer = "web-flow";
+    gh.refs.set("dependabot/x", forged);
+    gh.pr(1, { head: { ref: "dependabot/x", sha: forged }, base: { ref: "main", sha: o } });
+    const set = await soundRefreshes(gh, gh.repo, { commits: gh.prCommits(1), head: forged, baseSha: o, botLogin: gh.botLogin, authors: ["dependabot[bot]"] });
+    assert.equal(set.size, 0, "merging a main commit older than the bot's base");
+  }
+  const side = new FakeGitHub();
+  const stray = side.commit(new Map([["x", "y"]]), [], "x", "NoahJenkins");
+  await reject({ mergeParent: stray }, "second parent is not on main");
+});
+
+test("base drift: the policy file always counts, and a failed comparison is not trusted", async () => {
+  const { driftOverlap } = await import("../src/repo.mjs");
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const ok = { get: async () => ({ status: "ahead", files: [{ filename: ".github/pr-repair.json" }] }) };
+  assert.deepEqual(await driftOverlap(ok, "o/r", A, B, ["apps/api/Dockerfile"]), [".github/pr-repair.json"]);
+  const broken = { get: async () => { throw Object.assign(new Error("404"), { status: 404 }); } };
+  assert.equal(await driftOverlap(broken, "o/r", A, B, ["x"]), null);
+});

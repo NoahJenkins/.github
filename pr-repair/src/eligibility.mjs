@@ -28,7 +28,9 @@ export function updateKind({ title = "", body = "" }) {
 const isSecurity = (body) => /This update includes (?:a security fix|security fixes)/i.test(body || "");
 
 // pr: full pull request; commits: its commits; repo: "owner/name".
-export function originalEligibility(policy, pr, commits, repo) {
+// trustedRefreshes: shas of the App's update-branch merges that soundRefreshes
+// (repo.mjs) proved carry only the default branch and Dependabot's content.
+export function originalEligibility(policy, pr, commits, repo, { trustedRefreshes = new Set() } = {}) {
   const no = (reason) => ({ eligible: false, reason });
   if (pr.state !== "open" || pr.draft) return no("not an open, ready pull request");
   if (!policy.eligibility.authors.includes(pr.user?.login) || pr.user?.type !== "Bot") return no("author is not an eligible bot");
@@ -42,7 +44,7 @@ export function originalEligibility(policy, pr, commits, repo) {
     return no(`major ${eco} updates stay with a maintainer in this repository`);
   }
   if (pr.changed_files > policy.eligibility.maxChangedFiles) return no(`more than ${policy.eligibility.maxChangedFiles} changed files`);
-  const foreign = commits.filter((c) => !policy.eligibility.authors.includes(c.author?.login) || c.commit?.verification?.verified !== true);
+  const foreign = commits.filter((c) => (!policy.eligibility.authors.includes(c.author?.login) && !trustedRefreshes.has(c.sha)) || c.commit?.verification?.verified !== true);
   if (foreign.length) return no("a commit is not a verified commit by the update bot");
   return { eligible: true, ecosystem: eco, kind };
 }

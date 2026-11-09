@@ -33,6 +33,9 @@ export function decide(s) {
   const { policy, original: o, replacement: r, usage, limits } = s;
   if (!s.enabled) return out("disabled");
   if (s.exclusiveActive) return out("missing-configuration", "none", s.exclusiveDetail ?? "Another dependency controller is active for this repository. Disable it before pr-repair takes over, so two controllers never race on one pull request.");
+  // The App pushed here but the push cannot be proven a clean refresh, and
+  // Dependabot no longer rebases a branch someone else pushed to.
+  if (!o.eligibility.eligible && o.refreshed) return out("needs-human", "none", `#${o.pr.number}: ${o.eligibility.reason}; its branch has App commits that could not be verified as a clean update from ${policy.defaultBranch}. A maintainer can comment \`@dependabot recreate\`.`);
   if (!o.eligibility.eligible) return out("unsupported-scope", "none", o.eligibility.reason);
 
   // Replacement lifecycle first: it may be merged, stale, or foreign.
@@ -66,6 +69,8 @@ export function decide(s) {
   // so only the approver token may ask; an App comment is ignored.
   if (target.mergeable_state === "dirty") {
     if (r) return out("conflict", "close-stale-replacement", `${label} conflicts with ${policy.defaultBranch}; it is closed and rebuilt after the update bot rebases the original.`);
+    // Dependabot stops rebasing a branch anyone else pushed to (the App's refresh).
+    if (!s.canAskRebase && o.refreshed) return out("needs-human", "none", `${label} conflicts with ${policy.defaultBranch}, and Dependabot no longer rebases it after the App updated its branch; a maintainer can comment \`@dependabot recreate\`.`);
     if (!s.canAskRebase) return out("conflict", "none", "Dependabot rebases conflicting updates on its own; a maintainer can comment `@dependabot rebase` to hurry it.");
     return s.marks.rebase ? out("conflict", "none", "The update bot was asked to rebase this conflicting head; waiting.") : out("conflict", "request-rebase", "Asking the update bot to rebase the conflicting head.");
   }
@@ -74,6 +79,9 @@ export function decide(s) {
       if (!s.marks.refresh) return out("waiting-ci", "refresh", `${label} is behind ${policy.defaultBranch}; refreshing once for this head.`);
     } else if (policy.merge.originals && s.canAskRebase && !s.marks.rebase && t.ci.state === "success") {
       return out("waiting-ci", "request-rebase", `${label} is behind ${policy.defaultBranch}; asking the update bot to rebase once for this head.`);
+    } else if (policy.merge.originals && !s.canAskRebase && !s.marks.refresh && t.ci.state === "success") {
+      // No account Dependabot obeys: the App merges the default branch in (ark).
+      return out("waiting-ci", "refresh", `${label} is behind ${policy.defaultBranch}; updating its branch once for this head.`);
     }
     // Otherwise evaluate the head as it is: a failing head can still be repaired,
     // and the replacement branch is refreshed by the App.

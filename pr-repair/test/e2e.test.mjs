@@ -447,3 +447,123 @@ test("a repeated merge attempt does not approve the same head twice", async (t) 
   assert.equal(w.gh.writes.filter((x) => x.path.endsWith(`/pulls/${pub.replacement}/reviews`)).length, 1);
   assert.equal(w.gh.writes.filter((x) => x.path === "enablePullRequestAutoMerge").length, 2);
 });
+
+// Shared steps: sync -> replacement with green CI -> a reserved review task.
+async function toReview(t, w) {
+  const app = { gh: w.gh, repo: w.gh.repo, policy: w.policy, log: () => {}, appId: w.gh.appId, botId: w.gh.botId, botLogin: w.gh.botLogin };
+  const [sync] = (await runPlan(w.ctx)).tasks;
+  const out = mkdtempSync(join(tmpdir(), "pr-repair-out-"));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  await runValidate(app, sync, { candidateRoot: w.checkout.dir, proposalDir: out, outDir: join(out, "validated"), validation: () => ({ passed: true, results: [], generated: new Map([["pnpm-lock.yaml", "lockfileVersion: '9.0'\n"]]) }) });
+  const pub = await runPublish(app, sync, { proposalDir: out, validatedDir: join(out, "validated") });
+  const replacement = w.gh.pulls.get(pub.replacement);
+  w.ci(replacement.head.sha, "success");
+  const [review] = (await runPlan({ ...w.ctx, now: NOW() })).tasks;
+  assert.equal(review.kind, "review");
+  const files = w.gh.compare(w.main, replacement.head.sha).files.map((f) => f.filename);
+  writeFileSync(join(out, "proposal.json"), JSON.stringify(seal({ task: review, transport: "openai-compatible", model: "deepseek/deepseek-v4-flash", result: { verdict: "approve", summary: "Consistent.", coveredFiles: files, findings: [] } })));
+  return { app, out, replacement, review, publishReview: () => runPublish(app, review, { proposalDir: out, validatedDir: join(out, "validated") }) };
+}
+const moveMain = (w, path, content) => {
+  const tree = new Map(w.gh.commits.get(w.gh.refs.get("main")).tree).set(path, content);
+  const next = w.gh.commit(tree, [w.gh.refs.get("main")], `change ${path}`, "NoahJenkins");
+  w.gh.refs.set("main", next);
+  w.gh.runs = [{ id: w.gh.id(), status: "completed", conclusion: "success", updated_at: NOW(), head_sha: next, run_attempt: 1 }]; // its release passed
+  return next;
+};
+
+// Metriks #186: a passed review was thrown away twice because main moved with
+// pin-only changes to two workflow files, and the review budget ran out.
+test("a review survives main moving in files the replacement does not touch", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] }, merge: { ...p.merge, approve: "app" } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const r = await toReview(t, w);
+  moveMain(w, ".github/workflows/pr-repair.yml", "pinned: next\n"); // between reservation and publication
+  assert.equal((await r.publishReview()).review, "approve", "an unrelated move does not void the review");
+  moveMain(w, ".github/workflows/pr-repair-contract.yml", "pinned: next\n");
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.deepEqual(p.tasks, [], "no second review is reserved");
+  assert.equal(p.rows[0].state, "queued-merge");
+  assert.equal(ledgerOf(w.gh).entries.filter((e) => e.kind === "review").length, 1);
+});
+
+test("a review is redone when main changes a file the replacement changes", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] }, merge: { ...p.merge, approve: "app" } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const r = await toReview(t, w);
+  assert.equal((await r.publishReview()).review, "approve");
+  moveMain(w, "scripts/ops/smoke-api-docker.sh", "echo changed on main\n");
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.deepEqual(p.tasks.map((x) => x.kind), ["review"]);
+});
+
+test("a review whose reviewed files changed on main before publication is not published", async (t) => {
+  const w = world((p) => ({ ...p, review: { requireCodex: false, agentLogins: [] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const r = await toReview(t, w);
+  moveMain(w, "scripts/ops/smoke-api-docker.sh", "echo changed on main\n");
+  const res = await r.publishReview();
+  assert.equal(res.published, false);
+  assert.match(res.note, /main moved/);
+});
+
+// noahjenkins.com-v2 #296, RooferChat #104: out-of-scope originals showed no
+// status on the pull request, only on the dashboard.
+test("an out-of-scope original still shows its state on the pull request", async (t) => {
+  const w = world((p) => ({ ...p, eligibility: { ...p.eligibility, updates: { ...p.eligibility.updates, npm_and_yarn: "non-major" } } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const tree = new Map(w.gh.commits.get(w.main).tree).set("package.json", '{"dependencies":{"ai":"7.0.1"}}\n');
+  const head = w.gh.commit(tree, [w.main], "bump ai", "dependabot[bot]");
+  w.gh.refs.set("dependabot/npm_and_yarn/ai-7", head);
+  w.gh.pr(296, { title: "bump ai from 6.0.1 to 7.0.1", head: { ref: "dependabot/npm_and_yarn/ai-7", sha: head } });
+  const p = await runPlan(w.ctx);
+  assert.equal(p.rows.find((x) => x.number === 296).state, "unsupported-scope");
+  const check = w.gh.checks.find((c) => c.name === STATUS_CHECK && c.head_sha === head);
+  assert.ok(check, "a status check is posted on the out-of-scope original");
+  assert.equal(check.conclusion, "neutral", "informational: it never blocks another workflow's merge");
+  assert.match(check.output.title, /unsupported-scope/);
+});
+
+// ark: the App brings a behind original up to date; the result stays eligible.
+test("an original refreshed by the App with a merge from main stays eligible", async (t) => {
+  const w = world((p) => ({ ...p, merge: { ...p.merge, approve: "app" } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const tree = new Map(w.gh.commits.get(w.main).tree).set("package.json", '{"dependencies":{"x":"1.0.1"}}\n');
+  const head = w.gh.commit(tree, [w.main], "bump x", "dependabot[bot]");
+  const newMain = moveMain(w, ".github/workflows/ci.yml", "x\n");
+  const merged = new Map(w.gh.commits.get(newMain).tree).set("package.json", tree.get("package.json"));
+  const refreshed = w.gh.commit(merged, [head, newMain], "Merge branch 'main' into dependabot/npm_and_yarn/x", w.gh.botLogin);
+  w.gh.commits.get(refreshed).committer = "web-flow";
+  w.gh.refs.set("dependabot/npm_and_yarn/x", refreshed);
+  w.gh.pr(181, { title: "bump x from 1.0.0 to 1.0.1", head: { ref: "dependabot/npm_and_yarn/x", sha: refreshed } });
+  w.ci(refreshed, "success");
+  const p = await runPlan(w.ctx);
+  const row = p.rows.find((x) => x.number === 181);
+  assert.equal(row.state, "queued-merge", row.detail);
+
+  // The same shape with extra content in the merge is not Dependabot's change.
+  const tampered = w.gh.commit(new Map(merged).set("src/evil.js", "x"), [head, newMain], "Merge branch 'main'", w.gh.botLogin);
+  w.gh.commits.get(tampered).committer = "web-flow";
+  w.gh.refs.set("dependabot/npm_and_yarn/x", tampered);
+  w.gh.pulls.get(181).head.sha = tampered;
+  w.ci(tampered, "success");
+  const q = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(q.rows.find((x) => x.number === 181).state, "needs-human");
+  assert.match(q.rows.find((x) => x.number === 181).detail, /@dependabot recreate/);
+  assert.equal(w.gh.checks.filter((c) => c.name === STATUS_CHECK && c.head_sha === tampered).at(-1).conclusion, "action_required");
+});
+
+test("a green original behind main is brought up to date by the App once", async (t) => {
+  const w = world();
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const tree = new Map(w.gh.commits.get(w.main).tree).set("package.json", '{"dependencies":{"x":"1.0.1"}}\n');
+  const head = w.gh.commit(tree, [w.main], "bump x", "dependabot[bot]");
+  w.gh.refs.set("dependabot/npm_and_yarn/x", head);
+  w.gh.pr(180, { title: "bump x from 1.0.0 to 1.0.1", head: { ref: "dependabot/npm_and_yarn/x", sha: head }, mergeable_state: "behind" });
+  w.ci(head, "success");
+  await runPlan(w.ctx);
+  await runPlan({ ...w.ctx, now: NOW() });
+  const updates = w.gh.writes.filter((x) => x.method === "PUT" && x.path.endsWith("/pulls/180/update-branch"));
+  assert.equal(updates.length, 1, "once per head");
+  assert.equal(updates[0].body.expected_head_sha, head);
+});

@@ -20,14 +20,25 @@ CI fails on a Dependabot PR (or review finds a blocker)
                                                             ▼
      obsolete agent threads resolved ─▶ production interlock ─▶ approval per policy
                                                             ▼
-     native auto-merge with expectedHeadOid ─▶ existing release workflow
+     native auto-merge (or a direct merge once mergeable), bound to the head ─▶ existing release workflow
                                                             ▼
      original closed only if its head still matches the replacement's root
 ```
 
 Failed checks or blocking findings on the replacement re-enter repair within
-the same budget. Every pull request always shows one named state: on its
-`pr-repair` check run, on the `pr-repair status` issue, and in the run summary.
+the same budget. An independent review stays current while the default branch
+only changes files the replacement does not change and not the policy file;
+otherwise, or when that cannot be shown completely, it is redone. Every update
+pull request always shows one named state: on its `pr-repair` check run
+(neutral when out of scope, so it never blocks another workflow's merge), on
+the `pr-repair status` issue, and in the run summary.
+
+Where protection requires an up-to-date branch and pr-repair merges originals,
+a behind original is rebased by asking the update bot (with the approver token)
+or, without one, by the App updating the branch from the default branch once
+per head. Dependabot stops rebasing a branch someone else pushed to, so a
+refreshed original that later conflicts goes to a maintainer (`@dependabot
+recreate`).
 
 | State | Meaning |
 | --- | --- |
@@ -48,7 +59,12 @@ the same budget. Every pull request always shows one named state: on its
 - Originals: open, same-repository pull requests from a bot listed in
   `eligibility.authors` (default `dependabot[bot]`), targeting the default branch,
   in an ecosystem the policy lists, with every commit a verified commit by that
-  bot. `non-major` ecosystems reject majors unless `securityMajors` is set and
+  bot. The one exception is the controller App's update-branch merge, and only
+  when it is provably harmless: committed by GitHub (`web-flow`), its second
+  parent already on the default branch, no bot commit after it, the default
+  branch has not touched the bot's files, and the head tree is exactly that
+  default-branch commit plus the bot's own changes (every path, blob, and
+  mode). An App commit that cannot be proven sound goes to a maintainer. `non-major` ecosystems reject majors unless `securityMajors` is set and
   the body says it is a security fix.
 - Replacements: the controller App's own pull request on `pr-repair/<n>` whose
   body carries its provenance and whose commits are all verified App or bot

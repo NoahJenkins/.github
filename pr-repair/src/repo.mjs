@@ -1,6 +1,7 @@
 // Repository reads shared by every mode: file contents at exact commits, the
 // original update's own change set, and runtime-contract inputs.
 import { matchesAny } from "../../review-gate/src/glob.mjs";
+import { POLICY_PATH } from "./policy.mjs";
 import { isDockerfile, requestedTargets, resolveImageVersions, runtimeMoves, syncRuntimeFields } from "./contract.mjs";
 import { SHA, sha256 } from "./digest.mjs";
 
@@ -46,6 +47,72 @@ export async function changeSet(gh, repo, baseSha, headSha, { withContent = (p) 
     });
   }
   return { mergeBase, status: cmp.status, behindBy: cmp.behind_by, changes };
+}
+
+// Files among `paths` that the default branch changed between two of its
+// commits, or null when that cannot be shown completely (main was rewritten,
+// or the comparison is truncated). A rename counts for both of its names.
+// The policy file always counts: a review is bound to the policy it ran under.
+export async function driftOverlap(gh, repo, fromBase, toBase, paths) {
+  if (!SHA.test(fromBase) || !SHA.test(toBase)) throw new Error("invalid commit identity");
+  if (fromBase === toBase) return [];
+  let cmp;
+  try {
+    cmp = await gh.get(`/repos/${repo}/compare/${fromBase}...${toBase}`);
+  } catch {
+    return null;
+  }
+  const files = cmp.files ?? [];
+  if (cmp.status !== "ahead" || files.length >= 300) return null;
+  const touched = new Set(files.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean)));
+  return [...new Set([...paths, POLICY_PATH])].filter((p) => touched.has(p));
+}
+
+// The controller App's update-branch merges on an original, when provably
+// harmless: every App commit is a GitHub-committed (web-flow) two-parent merge
+// of a commit already on the default branch and no older than the bot's base,
+// no bot commit follows one, the
+// default branch has not touched the bot's files since the bot's base, and the
+// head tree is exactly that default-branch commit plus the bot's own changes
+// (every path, blob, and mode). Anything else returns an empty set.
+export async function soundRefreshes(gh, repo, { commits, head, baseSha, botLogin, authors }) {
+  const none = new Set();
+  const app = commits.filter((c) => c.author?.login === botLogin);
+  if (!app.length) return none;
+  try {
+    const bot = commits.filter((c) => authors.includes(c.author?.login));
+    const tip = bot.at(-1);
+    if (!tip || app.length + bot.length !== commits.length) return none;
+    if (commits.indexOf(tip) > commits.indexOf(app[0])) return none;
+    for (const c of app) {
+      if (c.parents?.length !== 2 || c.committer?.login !== "web-flow") return none;
+      const cmp = await gh.get(`/repos/${repo}/compare/${c.parents[1].sha}...${baseSha}`);
+      if (!["identical", "ahead"].includes(cmp.status)) return none;
+    }
+    const merged = app.at(-1).parents[1].sha;
+    const botBase = (await gh.get(`/repos/${repo}/compare/${baseSha}...${tip.sha}`)).merge_base_commit?.sha;
+    if (!SHA.test(botBase || "")) return none;
+    // History only moves forward: the bot's base and every earlier merged
+    // commit are ancestors of the last merged one, so nothing on the default
+    // branch since the bot's base can be undone.
+    const forward = async (older) => ["identical", "ahead"].includes((await gh.get(`/repos/${repo}/compare/${older}...${merged}`)).status);
+    for (const sha of [botBase, ...app.map((c) => c.parents[1].sha)]) if (!(await forward(sha))) return none;
+    const tree = async (sha) => {
+      const t = await gh.get(`/repos/${repo}/git/trees/${sha}?recursive=1`);
+      if (t.truncated) throw new Error("tree truncated");
+      return new Map(t.tree.filter((e) => e.type !== "tree").map((e) => [e.path, `${e.mode} ${e.sha}`]));
+    };
+    const [tHead, tTip, tMain, tBotBase] = [await tree(head), await tree(tip.sha), await tree(merged), await tree(botBase)];
+    const paths = new Set([...tHead.keys(), ...tTip.keys(), ...tMain.keys(), ...tBotBase.keys()]);
+    for (const p of paths) {
+      const botChanged = tTip.get(p) !== tBotBase.get(p);
+      if (botChanged && tMain.get(p) !== tBotBase.get(p)) return none;
+      if (tHead.get(p) !== (botChanged ? tTip.get(p) : tMain.get(p))) return none;
+    }
+  } catch {
+    return none;
+  }
+  return new Set(app.map((c) => c.sha));
 }
 
 const needsText = (p) => isDockerfile(p) || /(^|\/)(package\.json|go\.mod)$/.test(p) || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p);
