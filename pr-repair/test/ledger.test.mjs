@@ -107,3 +107,22 @@ test("repair and review may use different models; Copilot is no longer a transpo
   assert.throws(() => parsePolicy({ ...rawPolicy(), inference: { ...rawPolicy().inference, transport: "copilot-cli" } }), /transport must be/);
   assert.throws(() => parsePolicy({ ...rawPolicy(), inference: { ...rawPolicy().inference, copilot: {} } }), /not a known key/);
 });
+
+// Metriks #195: a Dell runner-image pin, not the update, failed CI.
+test("environment checks name exact required checks and steps with a reason", () => {
+  const ec = (list) => ({ ...rawPolicy(), ci: { ...rawPolicy().ci, environmentChecks: list } });
+  const one = { check: "browser e2e", step: "verify preinstalled browser version", reason: "the Dell runner image pins Playwright; rebuild it in homelab first" };
+  assert.deepEqual(parsePolicy(ec([one])).ci.environmentChecks, [one]);
+  assert.deepEqual(parsePolicy(rawPolicy()).ci.environmentChecks, []);
+  assert.throws(() => parsePolicy(ec([{ ...one, check: "lint" }])), /required check/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "" }])), /environmentChecks\[0\]/);
+  assert.throws(() => parsePolicy(ec([{ check: one.check, step: one.step }])), /environmentChecks\[0\]/);
+  assert.throws(() => parsePolicy(ec([{ ...one, extra: 1 }])), /not a known key/);
+  assert.throws(() => parsePolicy(ec([one, { ...one }])), /duplicate/);
+  assert.throws(() => parsePolicy(ec({})), /must be an array/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "rebuild it\nnow" }])), /control characters/);
+  assert.throws(() => parsePolicy(ec([{ ...one, step: "verify\u0007" }])), /control characters/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "ask @NoahJenkins" }])), /mention/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "x".repeat(300) }])), /environmentChecks\[0\]/);
+  assert.equal(parsePolicy(ec([{ ...one, step: "Run actions/checkout@v4" }])).ci.environmentChecks[0].step, "Run actions/checkout@v4", "step names may contain @");
+});

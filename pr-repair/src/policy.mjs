@@ -60,7 +60,25 @@ export function parsePolicy(raw) {
 
   const ci = raw.ci ?? {};
   if (!isObj(ci) || !strings(ci.requiredChecks) || !ci.requiredChecks.length) e.push("ci.requiredChecks must list the required check names");
-  if (isObj(ci)) only(ci, ["requiredChecks", "checkAppId"], "ci", e);
+  if (isObj(ci)) only(ci, ["requiredChecks", "checkAppId", "environmentChecks"], "ci", e);
+  // A required check step that tests the CI environment, not the change (for
+  // example a runner image's pinned tool version). Failing there goes to a
+  // maintainer without a paid repair.
+  const envChecks = ci.environmentChecks ?? [];
+  if (!Array.isArray(envChecks)) e.push("ci.environmentChecks must be an array");
+  const seen = new Set();
+  for (const [i, c] of (Array.isArray(envChecks) ? envChecks : []).entries()) {
+    const at = `ci.environmentChecks[${i}]`;
+    if (!isObj(c) || !strings([c.check, c.step, c.reason])) { e.push(`${at} needs check, step, and reason`); continue; }
+    only(c, ["check", "step", "reason"], at, e);
+    if ([c.check, c.step, c.reason].some((x) => /[\u0000-\u001f\u007f-\u009f]/.test(x))) e.push(`${at} may not contain control characters`);
+    // The reason is shown on pull requests; it must not notify anyone.
+    if (c.reason.includes("@")) e.push(`${at}.reason may not contain an @ mention`);
+    if (!strings(ci.requiredChecks) || !ci.requiredChecks.includes(c.check)) e.push(`${at}.check must be a required check`);
+    const k = JSON.stringify([c.check, c.step]);
+    if (seen.has(k)) e.push(`${at} is a duplicate`);
+    seen.add(k);
+  }
 
   const el = raw.eligibility ?? {};
   if (isObj(el)) only(el, ["authors", "updates", "securityMajors", "maxChangedFiles"], "eligibility", e);
@@ -170,7 +188,7 @@ export function parsePolicy(raw) {
   return Object.freeze({
     version: 1,
     defaultBranch: raw.defaultBranch ?? "main",
-    ci: { requiredChecks: [...ci.requiredChecks], checkAppId: ci.checkAppId ?? 15368 },
+    ci: { requiredChecks: [...ci.requiredChecks], checkAppId: ci.checkAppId ?? 15368, environmentChecks: envChecks.map(({ check, step, reason }) => ({ check, step, reason })) },
     eligibility: {
       authors: el.authors ?? ["dependabot[bot]"],
       updates: { ...updates },

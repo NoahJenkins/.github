@@ -264,3 +264,31 @@ test("an original may carry the App's own verified merge-from-main commits, noth
   assert.match(originalEligibility(p, base, [bot, { ...sound, commit: { verification: { verified: false } } }], "o/r", ids).reason, /not a verified commit/);
   assert.match(originalEligibility(p, base, [bot, sound], "o/r").reason, /not a verified commit/, "nothing proven, no exception");
 });
+
+test("a failure at a declared environment check reaches a maintainer before any re-run or paid repair (Metriks #195)", () => {
+  const environment = [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "the Dell runner image pins Playwright; rebuild it in homelab first" }];
+  const failed = { state: "failure", failed: ["browser e2e"], missing: [], environment };
+  const d = decide(snap({ original: { ...snap().original, ci: failed } }));
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  assert.match(d.detail, /browser e2e \/ verify preinstalled browser version/);
+  assert.match(d.detail, /rebuild it in homelab first/);
+  assert.match(d.detail, /No repair is attempted/);
+  const later = decide(snap({ marks: { rerun: true }, original: { ...snap().original, ci: failed } }));
+  assert.deepEqual([later.state, later.action], ["needs-human", "none"]);
+  // A replacement's own CI failing the same way is handled alike.
+  const rd = decide(snap({ replacement: replacement({ ci: failed, review: null }) }));
+  assert.deepEqual([rd.state, rd.action], ["needs-human", "none"]);
+  // Without the evidence the normal path is unchanged.
+  assert.equal(decide(snap({ original: { ...snap().original, ci: { ...failed, environment: null } } })).action, "rerun-ci");
+});
+
+test("environment evidence counts only when every other required check has finished", () => {
+  const environment = [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }];
+  const withPending = decide(snap({ original: { ...snap().original, ci: { state: "failure", failed: ["browser e2e"], missing: ["verify"], environment } } }));
+  assert.equal(withPending.state, "waiting-ci", "a pending sibling may still fail for another reason");
+  assert.notEqual(withPending.action, "repair");
+  const interrupted = decide(snap({ original: { ...snap().original, ci: { state: "interrupted", failed: [], missing: [], environment } } }));
+  assert.deepEqual([interrupted.state, interrupted.action], ["waiting-ci", "rerun-ci"]);
+  const pending = decide(snap({ original: { ...snap().original, ci: { state: "pending", failed: [], missing: ["browser e2e"], environment } } }));
+  assert.deepEqual([pending.state, pending.action], ["waiting-ci", "none"]);
+});

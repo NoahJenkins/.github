@@ -49,7 +49,7 @@ recreate`).
 | `conflict` | A merge conflict; the update bot is asked to rebase once per head. |
 | `exhausted` | The bounded budget is used. A maintainer decides. |
 | `production-paused` | Production evidence is unhealthy or unreadable; queued merges are disabled. |
-| `needs-human` | Foreign commits, human or current-head threads, repeated interruptions, review findings only in files repair may not edit, or a repair of this head that proposed no change. |
+| `needs-human` | Foreign commits, human or current-head threads, repeated interruptions, review findings only in files repair may not edit, a repair of this head that proposed no change, or a failure at a declared environment check. |
 | `waiting-merge-path` | Green original; the repository's existing workflow merges it. |
 | `queued-merge` | Native auto-merge is queued for the validated head. |
 | `resolved` | The replacement merged and the original closed. |
@@ -186,11 +186,57 @@ from the credential-only `preflight` job.
    waits until none of them has a queued or running run, whatever concurrency
    group they use, so a handoff or rollback never overlaps an in-flight run.
 
+### Environment checks
+
+Some failures no edit in the pull request can fix. In Metriks #195 an npm group
+moved Playwright to 1.65.0 while the Dell runner image pinned 1.64.1; the
+`browser e2e` step `verify preinstalled browser version` failed, and a paid
+repair proposed nothing. Declare such a step:
+
+```json
+"ci": {
+  "requiredChecks": ["verify", "browser e2e"],
+  "environmentChecks": [
+    { "check": "browser e2e", "step": "verify preinstalled browser version",
+      "reason": "the Dell runner image pins Playwright; rebuild it in NoahJenkins/homelab first" }
+  ]
+}
+```
+
+`check` must be a required check; `check` and `step` match exactly. A
+`reason` may not contain control characters or an `@` (it is shown on pull
+requests and must not notify anyone). When every required check on the head
+has finished and every failed one stopped first at a declared step, the pull
+request goes to `needs-human` with the reason, before any reservation or
+model call. While another required check is still pending, pr-repair waits.
+
+Each check is judged by its latest run's first failing step (from the
+Actions job's step metadata, never its log), so a later `if: failure()`
+diagnostics or cleanup step that fails as a consequence does not count. Any
+other failing check or step, or unreadable job metadata, follows the normal
+path. A declared step must not be `continue-on-error`: GitHub reports such a
+step's conclusion as `success`, so it would never match, and a failure after
+it is ordinary evidence. An advisory `continue-on-error` step before it is
+harmless; if GitHub ever reports one as a failure, it is the first failing
+step and the normal path follows.
+
+The environment verdict deliberately skips the free re-run that other
+failures get. A pool that mixes runners could pass on a re-run, but the
+step failed for a declared environmental reason, and an automatic re-run
+would only hide that. A maintainer re-runs the checks once the environment
+is fixed (or to try another runner).
+
+The policy is read from the default branch, but step names come from the
+workflow that ran, which a pull request can edit. A pull request that renames
+a failing step can only send itself to a maintainer; it cannot gain a repair,
+review, or merge.
+
 ### Policy keys
 
 | Key | Purpose |
 | --- | --- |
 | `ci.requiredChecks`, `ci.checkAppId` | Required check names and their publishing app (GitHub Actions `15368`). |
+| `ci.environmentChecks` | `[{check, step, reason}]`: a step of a required check that tests the CI environment, not the change (for example a runner image's pinned tool version). See below. |
 | `eligibility.updates` | `{ecosystem: "all" \| "non-major"}`. Unlisted ecosystems are out of scope. |
 | `eligibility.authors`, `securityMajors`, `maxChangedFiles` | Bot authors, security-major exception, file cap. |
 | `repair.editable`, `repair.protected`, `repair.context` | Model-editable globs; extra protected globs; extra context for the model. |

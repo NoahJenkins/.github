@@ -14,6 +14,7 @@ export class FakeGitHub {
     this.comments = [];
     this.writes = [];
     this.runs = [];
+    this.jobs = new Map(); // Actions job id (= check run id) -> {id, name, steps}
     this.nextId = 1000;
   }
   commit(tree, parents = [], message = "c", author = "dependabot[bot]", fixed = null) {
@@ -52,6 +53,12 @@ export class FakeGitHub {
     if ((m = p.match(new RegExp(`^${r}/git/trees/(\\w+)$`)))) return { truncated: false, tree: [...this.commits.get(m[1]).tree].map(([path2, c]) => ({ path: path2, type: "blob", mode: this.commits.get(m[1]).modes?.[path2] ?? "100644", size: c.length, sha: sha(`blob ${c}`) })) };
     if ((m = p.match(new RegExp(`^${r}/issues/comments/(\\d+)$`)))) return structuredClone(this.comments.find((c) => c.id === Number(m[1])));
     if (p === `/repos/${this.repo}`) return { default_branch: "main" };
+    if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)$`)))) {
+      const job = this.jobs.get(Number(m[1]));
+      if (!job) throw Object.assign(new Error("404"), { status: 404 });
+      if (job.status) throw Object.assign(new Error(String(job.status)), { status: job.status });
+      return structuredClone(job);
+    }
     if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)/logs$`)))) return `2026-11-07T00:00:00Z ##[group]Run pnpm test\nFAIL src/a.test.ts\nTypeError: hono.newApi is not a function (job ${m[1]})\n`;
     throw new Error(`fake GET not implemented: ${path}`);
   }

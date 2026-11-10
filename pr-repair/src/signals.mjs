@@ -26,6 +26,23 @@ export function ciState(checkRuns, required, appId) {
 export const failedJobIds = (checkRuns, required, appId) =>
   checkRuns.filter((c) => required.includes(c.name) && c.app?.id === appId && ["failure", "timed_out"].includes(c.conclusion)).map((c) => ({ id: c.id, name: c.name }));
 
+// The policy's environment checks that explain every failed required check, or
+// null. Each failed check is judged by its first failing step: later steps
+// (diagnostics uploads, cleanup) fail as a consequence. failed: [{check, steps}]
+// with the Actions job's step metadata; unreadable steps are not evidence.
+export function environmentFailure(declared, failed) {
+  if (!declared.length || !failed.length) return null;
+  const found = [];
+  for (const { check, steps } of failed) {
+    if (!Array.isArray(steps)) return null;
+    const first = steps.filter((s) => ["failure", "timed_out"].includes(s.conclusion)).sort((a, b) => a.number - b.number)[0];
+    const match = first && declared.find((d) => d.check === check && d.step === first.name);
+    if (!match) return null;
+    found.push(match);
+  }
+  return found;
+}
+
 // Production health for the policy's interlock kind. Any read error is unhealthy.
 export async function productionHealth(gh, repo, policy, baseSha) {
   const p = policy.merge.production;

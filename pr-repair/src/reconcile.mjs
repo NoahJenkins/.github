@@ -6,7 +6,7 @@ import { REPLACEMENT_PREFIX, originalEligibility, parseProvenance, replacementEl
 import { encodeLedger, mark, marked, prune, readLedger, reserve, RESERVATION_TTL, transition, usage } from "./ledger.mjs";
 import { inferenceGaps } from "./policy.mjs";
 import { driftOverlap, fieldFilesAt, originalRequest, soundRefreshes, syncFor } from "./repo.mjs";
-import { STATUS_CHECK, ciState, classifyThreads, codexState, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
+import { STATUS_CHECK, ciState, classifyThreads, codexState, environmentFailure, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
 
 export const STATE_LABEL = "pr-repair";
 const DASHBOARD = "<!-- pr-repair-dashboard:v1 -->";
@@ -47,6 +47,20 @@ export async function saveLedger(ctx, issue, state, next) {
   }
   state.raw = body;
   state.ledger = next;
+}
+
+// Step metadata of each failed required check's Actions job (the job id is the
+// check run id), read only when the policy declares a step for every one.
+async function environmentEvidence(ctx, checks, ci) {
+  const declared = ctx.policy.ci.environmentChecks;
+  if (ci.state !== "failure" || ci.missing.length || !ci.failed.every((name) => declared.some((d) => d.check === name))) return null;
+  const failed = [];
+  for (const name of ci.failed) {
+    const run = checks.filter((c) => c.name === name && c.app?.id === ctx.policy.ci.checkAppId).sort((a, b) => b.id - a.id)[0];
+    const steps = await ctx.gh.get(`/repos/${ctx.repo}/actions/jobs/${run.id}`).then((j) => j.steps ?? null, () => null);
+    failed.push({ check: name, steps });
+  }
+  return environmentFailure(declared, failed);
 }
 
 async function checksAt(ctx, sha) {
@@ -292,6 +306,7 @@ export async function runPlan(ctx) {
         const checks = await checksAt(ctx, target.head.sha);
         const t = r && !r.merged ? r : s.original;
         t.ci = ciState(checks, policy.ci.requiredChecks, policy.ci.checkAppId);
+        t.ci.environment = await environmentEvidence(ctx, checks, t.ci);
         if (req.moves.length) {
           try {
             const fields = await fieldFilesAt(gh, repo, policy, req.moves, target.head.sha);

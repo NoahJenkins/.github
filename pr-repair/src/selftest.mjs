@@ -88,6 +88,7 @@ async function fakeEndpointCheck() {
 export async function selftest({ root, log }) {
   const policy = parsePolicy(JSON.parse(readFileSync(join(root, POLICY_PATH), "utf8")));
   log(`policy: ${POLICY_PATH} parses (${Object.keys(policy.eligibility.updates).join(", ")}; checks: ${policy.ci.requiredChecks.join(", ")})`);
+  for (const c of policy.ci.environmentChecks) log(`environment check: "${c.check} / ${c.step}" goes to a maintainer without repair (${c.reason})`);
   const globs = policy.runtimes.flatMap((r) => r.fields.flatMap((f) => f.files));
   const tree = files(root, (p) => isDockerfile(p) || (globs.length > 0 && matchesAny(p, globs)));
   const problems = await contractAtRest(policy, tree);

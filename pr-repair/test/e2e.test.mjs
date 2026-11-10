@@ -567,3 +567,80 @@ test("a green original behind main is brought up to date by the App once", async
   assert.equal(updates.length, 1, "once per head");
   assert.equal(updates[0].body.expected_head_sha, head);
 });
+
+// Metriks #195: the npm group moved Playwright to 1.65.0 while the Dell runner
+// image still pinned 1.64.1. The version check failed and one paid repair
+// proposed nothing. A declared environment check now reaches a maintainer first.
+test("a failure at a declared environment check reaches a maintainer with no re-run or reservation", async (t) => {
+  const reason = "the Dell runner image pins Playwright; rebuild it in homelab first";
+  const w = world((p) => ({ ...p, runtimes: [], ci: { ...p.ci, environmentChecks: [{ check: "browser e2e", step: "verify preinstalled browser version", reason }] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const step = (number, name, conclusion) => ({ number, name, conclusion });
+  for (const c of w.gh.checks.filter((x) => x.head_sha === w.head)) {
+    c.conclusion = c.name === "browser e2e" ? "failure" : "success";
+    w.gh.jobs.set(c.id, { id: c.id, name: c.name, steps: c.name === "browser e2e" ? [step(1, "Set up job", "success"), step(4, "verify preinstalled browser version", "failure"), step(5, "upload browser failure diagnostics", "failure")] : [step(1, "Set up job", "success")] });
+  }
+  for (let i = 0; i < 2; i++) {
+    const p = await runPlan({ ...w.ctx, now: NOW() });
+    assert.deepEqual(p.tasks, [], "no task is handed to inference");
+    assert.equal(p.rows[0].state, "needs-human");
+    assert.match(p.rows[0].detail, /browser e2e \/ verify preinstalled browser version/);
+  }
+  assert.deepEqual(ledgerOf(w.gh).entries, [], "no attempt is reserved");
+  assert.ok(!w.gh.writes.some((x) => /rerun/.test(x.path)), "a known environment failure is not re-run");
+  const status = w.gh.checks.find((c) => c.name === STATUS_CHECK && c.head_sha === w.head);
+  assert.equal(status.conclusion, "action_required");
+  assert.match(status.output.summary, /rebuild it in homelab first/);
+
+  // Another required check failing too is ordinary evidence: the normal path resumes.
+  w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify").conclusion = "failure";
+  const mixed = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(mixed.rows[0].state, "waiting-ci");
+  assert.match(mixed.rows[0].detail, /re-running the failed checks once/);
+});
+
+function environmentWorld(t) {
+  const w = world((p) => ({ ...p, runtimes: [], ci: { ...p.ci, environmentChecks: [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const e2e = w.gh.checks.find((c) => c.head_sha === w.head && c.name === "browser e2e");
+  e2e.conclusion = "failure";
+  for (const c of w.gh.checks.filter((x) => x.head_sha === w.head && x.name !== "browser e2e")) c.conclusion = "success";
+  return { w, e2e };
+}
+const envSteps = (first) => [{ number: 1, name: "Set up job", conclusion: "success" }, { number: 4, name: first, conclusion: "failure" }, { number: 5, name: "upload browser failure diagnostics", conclusion: "failure" }];
+
+test("unreadable job metadata (404 or 500) is not environment evidence", async (t) => {
+  for (const status of [404, 500]) {
+    const { w, e2e } = environmentWorld(t);
+    if (status === 500) w.gh.jobs.set(e2e.id, { id: e2e.id, status: 500 });
+    const p = await runPlan({ ...w.ctx, now: NOW() });
+    assert.equal(p.rows[0].state, "waiting-ci", `${status}: the normal path re-runs first`);
+    assert.match(p.rows[0].detail, /re-running the failed checks once/);
+  }
+});
+
+test("the latest run of a re-run check decides, not an earlier attempt", async (t) => {
+  const { w, e2e } = environmentWorld(t);
+  w.gh.jobs.set(e2e.id, { id: e2e.id, steps: envSteps("pnpm install") });
+  const again = { ...structuredClone(e2e), id: w.gh.id() };
+  w.gh.checks.push(again);
+  w.gh.jobs.set(again.id, { id: again.id, steps: envSteps("verify preinstalled browser version") });
+  assert.equal((await runPlan({ ...w.ctx, now: NOW() })).rows[0].state, "needs-human", "the newer attempt stopped at the declared step");
+
+  const { w: w2, e2e: first } = environmentWorld(t);
+  w2.gh.jobs.set(first.id, { id: first.id, steps: envSteps("verify preinstalled browser version") });
+  const later = { ...structuredClone(first), id: w2.gh.id() };
+  w2.gh.checks.push(later);
+  w2.gh.jobs.set(later.id, { id: later.id, steps: envSteps("pnpm install") });
+  assert.equal((await runPlan({ ...w2.ctx, now: NOW() })).rows[0].state, "waiting-ci", "the newer attempt failed elsewhere");
+});
+
+test("a pending sibling check withholds the environment verdict and reserves nothing", async (t) => {
+  const { w, e2e } = environmentWorld(t);
+  w.gh.jobs.set(e2e.id, { id: e2e.id, steps: envSteps("verify preinstalled browser version") });
+  Object.assign(w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify"), { status: "in_progress", conclusion: null });
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(p.rows[0].state, "waiting-ci");
+  assert.deepEqual(p.tasks, []);
+  assert.deepEqual(ledgerOf(w.gh).entries, []);
+});

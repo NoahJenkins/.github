@@ -100,6 +100,16 @@ export function decide(s) {
     return s.marks.rerun ? out("needs-human", "none", `Required checks were interrupted twice on ${target.head.sha.slice(0, 7)}.`) : out("waiting-ci", "rerun-ci", "Re-running interrupted required checks once.");
   }
 
+  // A declared environment check (Metriks #195: the Dell image's pinned
+  // Playwright) fails the same way on every run and no edit here fixes it.
+  // Every other required check must have finished: a pending one may still
+  // fail for a reason a repair can fix.
+  if (ci.state === "failure" && !ci.missing.length && ci.environment?.length) {
+    const where = ci.environment.map((e) => `"${e.check} / ${e.step}"`).join(", ");
+    const reasons = [...new Set(ci.environment.map((e) => e.reason))].join("; ");
+    return out("needs-human", "none", `${label} stopped at ${where}, which checks the CI environment: ${reasons}. No repair is attempted; re-run the checks once the environment is fixed.`);
+  }
+
   const findings = r?.review?.verdict === "fail" || r?.codex === "findings";
   // A failure must reproduce on a fresh run before any paid repair: stale runs
   // and infrastructure timeouts (ark #180) cost a free re-run, not an attempt.
