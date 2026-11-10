@@ -281,3 +281,14 @@ test("a failure at a declared environment check reaches a maintainer before any 
   // Without the evidence the normal path is unchanged.
   assert.equal(decide(snap({ original: { ...snap().original, ci: { ...failed, environment: null } } })).action, "rerun-ci");
 });
+
+test("environment evidence counts only when every other required check has finished", () => {
+  const environment = [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }];
+  const withPending = decide(snap({ original: { ...snap().original, ci: { state: "failure", failed: ["browser e2e"], missing: ["verify"], environment } } }));
+  assert.equal(withPending.state, "waiting-ci", "a pending sibling may still fail for another reason");
+  assert.notEqual(withPending.action, "repair");
+  const interrupted = decide(snap({ original: { ...snap().original, ci: { state: "interrupted", failed: [], missing: [], environment } } }));
+  assert.deepEqual([interrupted.state, interrupted.action], ["waiting-ci", "rerun-ci"]);
+  const pending = decide(snap({ original: { ...snap().original, ci: { state: "pending", failed: [], missing: ["browser e2e"], environment } } }));
+  assert.deepEqual([pending.state, pending.action], ["waiting-ci", "none"]);
+});

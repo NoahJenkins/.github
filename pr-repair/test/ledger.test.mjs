@@ -120,4 +120,9 @@ test("environment checks name exact required checks and steps with a reason", ()
   assert.throws(() => parsePolicy(ec([{ ...one, extra: 1 }])), /not a known key/);
   assert.throws(() => parsePolicy(ec([one, { ...one }])), /duplicate/);
   assert.throws(() => parsePolicy(ec({})), /must be an array/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "rebuild it\nnow" }])), /control characters/);
+  assert.throws(() => parsePolicy(ec([{ ...one, step: "verify\u0007" }])), /control characters/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "ask @NoahJenkins" }])), /mention/);
+  assert.throws(() => parsePolicy(ec([{ ...one, reason: "x".repeat(300) }])), /environmentChecks\[0\]/);
+  assert.equal(parsePolicy(ec([{ ...one, step: "Run actions/checkout@v4" }])).ci.environmentChecks[0].step, "Run actions/checkout@v4", "step names may contain @");
 });

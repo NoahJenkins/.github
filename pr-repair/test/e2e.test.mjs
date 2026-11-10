@@ -594,8 +594,53 @@ test("a failure at a declared environment check reaches a maintainer with no re-
 
   // Another required check failing too is ordinary evidence: the normal path resumes.
   w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify").conclusion = "failure";
-  w.gh.jobs.get(w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify").id).steps.push(step(3, "pnpm test", "failure"));
   const mixed = await runPlan({ ...w.ctx, now: NOW() });
   assert.equal(mixed.rows[0].state, "waiting-ci");
   assert.match(mixed.rows[0].detail, /re-running the failed checks once/);
+});
+
+function environmentWorld(t) {
+  const w = world((p) => ({ ...p, runtimes: [], ci: { ...p.ci, environmentChecks: [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const e2e = w.gh.checks.find((c) => c.head_sha === w.head && c.name === "browser e2e");
+  e2e.conclusion = "failure";
+  for (const c of w.gh.checks.filter((x) => x.head_sha === w.head && x.name !== "browser e2e")) c.conclusion = "success";
+  return { w, e2e };
+}
+const envSteps = (first) => [{ number: 1, name: "Set up job", conclusion: "success" }, { number: 4, name: first, conclusion: "failure" }, { number: 5, name: "upload browser failure diagnostics", conclusion: "failure" }];
+
+test("unreadable job metadata (404 or 500) is not environment evidence", async (t) => {
+  for (const status of [404, 500]) {
+    const { w, e2e } = environmentWorld(t);
+    if (status === 500) w.gh.jobs.set(e2e.id, { id: e2e.id, status: 500 });
+    const p = await runPlan({ ...w.ctx, now: NOW() });
+    assert.equal(p.rows[0].state, "waiting-ci", `${status}: the normal path re-runs first`);
+    assert.match(p.rows[0].detail, /re-running the failed checks once/);
+  }
+});
+
+test("the latest run of a re-run check decides, not an earlier attempt", async (t) => {
+  const { w, e2e } = environmentWorld(t);
+  w.gh.jobs.set(e2e.id, { id: e2e.id, steps: envSteps("pnpm install") });
+  const again = { ...structuredClone(e2e), id: w.gh.id() };
+  w.gh.checks.push(again);
+  w.gh.jobs.set(again.id, { id: again.id, steps: envSteps("verify preinstalled browser version") });
+  assert.equal((await runPlan({ ...w.ctx, now: NOW() })).rows[0].state, "needs-human", "the newer attempt stopped at the declared step");
+
+  const { w: w2, e2e: first } = environmentWorld(t);
+  w2.gh.jobs.set(first.id, { id: first.id, steps: envSteps("verify preinstalled browser version") });
+  const later = { ...structuredClone(first), id: w2.gh.id() };
+  w2.gh.checks.push(later);
+  w2.gh.jobs.set(later.id, { id: later.id, steps: envSteps("pnpm install") });
+  assert.equal((await runPlan({ ...w2.ctx, now: NOW() })).rows[0].state, "waiting-ci", "the newer attempt failed elsewhere");
+});
+
+test("a pending sibling check withholds the environment verdict and reserves nothing", async (t) => {
+  const { w, e2e } = environmentWorld(t);
+  w.gh.jobs.set(e2e.id, { id: e2e.id, steps: envSteps("verify preinstalled browser version") });
+  Object.assign(w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify"), { status: "in_progress", conclusion: null });
+  const p = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(p.rows[0].state, "waiting-ci");
+  assert.deepEqual(p.tasks, []);
+  assert.deepEqual(ledgerOf(w.gh).entries, []);
 });

@@ -282,4 +282,11 @@ test("an environment failure needs every failed check to stop first at a declare
   assert.equal(environmentFailure([], [e2e]), null);
   const timedOut = { check: "browser e2e", steps: [step(4, "verify preinstalled browser version", "timed_out")] };
   assert.ok(environmentFailure(declared, [timedOut]));
+  // continue-on-error: GitHub documents the step's final conclusion as success.
+  // If an advisory step is ever reported as failure, it is the first failing
+  // step and the normal path follows (conservative).
+  const advisoryOk = { check: "browser e2e", steps: [step(2, "advisory audit", "success"), step(4, "verify preinstalled browser version", "failure")] };
+  assert.ok(environmentFailure(declared, [advisoryOk]));
+  const advisoryFailed = { check: "browser e2e", steps: [step(2, "advisory audit", "failure"), step(4, "verify preinstalled browser version", "failure")] };
+  assert.equal(environmentFailure(declared, [advisoryFailed]), null);
 });

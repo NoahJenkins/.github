@@ -71,6 +71,9 @@ export function parsePolicy(raw) {
     const at = `ci.environmentChecks[${i}]`;
     if (!isObj(c) || !strings([c.check, c.step, c.reason])) { e.push(`${at} needs check, step, and reason`); continue; }
     only(c, ["check", "step", "reason"], at, e);
+    if ([c.check, c.step, c.reason].some((x) => /[\u0000-\u001f\u007f-\u009f]/.test(x))) e.push(`${at} may not contain control characters`);
+    // The reason is shown on pull requests; it must not notify anyone.
+    if (c.reason.includes("@")) e.push(`${at}.reason may not contain an @ mention`);
     if (!strings(ci.requiredChecks) || !ci.requiredChecks.includes(c.check)) e.push(`${at}.check must be a required check`);
     const k = JSON.stringify([c.check, c.step]);
     if (seen.has(k)) e.push(`${at} is a duplicate`);

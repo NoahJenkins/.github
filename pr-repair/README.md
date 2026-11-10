@@ -203,14 +203,28 @@ repair proposed nothing. Declare such a step:
 }
 ```
 
-`check` must be a required check; `check` and `step` match exactly. When
-every failed required check on the head stopped first at a declared step,
-the pull request goes to `needs-human` with the reason, before the free
-re-run and before any reservation or model call. Each check is judged by its
-first failing step (from the Actions job's step metadata, never its log), so
-a later diagnostics or cleanup step that fails as a consequence does not
-count. Any other failing check or step, or unreadable job metadata, follows
-the normal path. Re-run the checks once the environment is fixed.
+`check` must be a required check; `check` and `step` match exactly. A
+`reason` may not contain control characters or an `@` (it is shown on pull
+requests and must not notify anyone). When every required check on the head
+has finished and every failed one stopped first at a declared step, the pull
+request goes to `needs-human` with the reason, before any reservation or
+model call. While another required check is still pending, pr-repair waits.
+
+Each check is judged by its latest run's first failing step (from the
+Actions job's step metadata, never its log), so a later `if: failure()`
+diagnostics or cleanup step that fails as a consequence does not count. Any
+other failing check or step, or unreadable job metadata, follows the normal
+path. A declared step must not be `continue-on-error`: GitHub reports such a
+step's conclusion as `success`, so it would never match, and a failure after
+it is ordinary evidence. An advisory `continue-on-error` step before it is
+harmless; if GitHub ever reports one as a failure, it is the first failing
+step and the normal path follows.
+
+The environment verdict deliberately skips the free re-run that other
+failures get. A pool that mixes runners could pass on a re-run, but the
+step failed for a declared environmental reason, and an automatic re-run
+would only hide that. A maintainer re-runs the checks once the environment
+is fixed (or to try another runner).
 
 The policy is read from the default branch, but step names come from the
 workflow that ran, which a pull request can edit. A pull request that renames

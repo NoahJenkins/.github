@@ -53,7 +53,7 @@ export async function saveLedger(ctx, issue, state, next) {
 // check run id), read only when the policy declares a step for every one.
 async function environmentEvidence(ctx, checks, ci) {
   const declared = ctx.policy.ci.environmentChecks;
-  if (ci.state !== "failure" || !ci.failed.every((name) => declared.some((d) => d.check === name))) return null;
+  if (ci.state !== "failure" || ci.missing.length || !ci.failed.every((name) => declared.some((d) => d.check === name))) return null;
   const failed = [];
   for (const name of ci.failed) {
     const run = checks.filter((c) => c.name === name && c.app?.id === ctx.policy.ci.checkAppId).sort((a, b) => b.id - a.id)[0];

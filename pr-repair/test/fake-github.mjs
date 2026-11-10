@@ -54,8 +54,10 @@ export class FakeGitHub {
     if ((m = p.match(new RegExp(`^${r}/issues/comments/(\\d+)$`)))) return structuredClone(this.comments.find((c) => c.id === Number(m[1])));
     if (p === `/repos/${this.repo}`) return { default_branch: "main" };
     if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)$`)))) {
-      if (!this.jobs.has(Number(m[1]))) throw Object.assign(new Error("404"), { status: 404 });
-      return structuredClone(this.jobs.get(Number(m[1])));
+      const job = this.jobs.get(Number(m[1]));
+      if (!job) throw Object.assign(new Error("404"), { status: 404 });
+      if (job.status) throw Object.assign(new Error(String(job.status)), { status: job.status });
+      return structuredClone(job);
     }
     if ((m = p.match(new RegExp(`^${r}/actions/jobs/(\\d+)/logs$`)))) return `2026-11-07T00:00:00Z ##[group]Run pnpm test\nFAIL src/a.test.ts\nTypeError: hono.newApi is not a function (job ${m[1]})\n`;
     throw new Error(`fake GET not implemented: ${path}`);
