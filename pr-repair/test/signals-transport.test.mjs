@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createServer } from "node:http";
-import { ciState, classifyThreads, reviewResult, REVIEW_CHECK } from "../src/signals.mjs";
+import { ciState, classifyThreads, environmentFailure, reviewResult, REVIEW_CHECK } from "../src/signals.mjs";
 import { runOpenAI, isVercelGateway } from "../src/transport-openai.mjs";
 import { emptyLedger } from "../src/ledger.mjs";
 import { sanitizeLog } from "../src/digest.mjs";
@@ -262,4 +262,24 @@ test("the three-way merge counts only when diff algorithms and argument orders a
   assert.equal(mergeThreeWay(main, base, bot), null, "Myers and histogram disagree");
   assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a b c1")), lines("a1 b c1"));
   assert.equal(mergeThreeWay(lines("a1 b c"), lines("a b c"), lines("a2 b c")), null, "a conflict");
+});
+
+// Metriks #195: the version check failed, then the diagnostics upload failed
+// because the check left no files. The first failing step is the cause.
+test("an environment failure needs every failed check to stop first at a declared step", () => {
+  const declared = [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }];
+  const step = (number, name, conclusion) => ({ number, name, conclusion });
+  const e2e = { check: "browser e2e", steps: [step(1, "Set up job", "success"), step(5, "upload browser failure diagnostics", "failure"), step(4, "verify preinstalled browser version", "failure"), step(6, "Complete job", "success")] };
+  assert.deepEqual(environmentFailure(declared, [e2e]), [{ check: "browser e2e", step: "verify preinstalled browser version", reason: "rebuild the Dell image" }]);
+  const verify = { check: "verify", steps: [step(3, "pnpm test", "failure")] };
+  assert.equal(environmentFailure(declared, [e2e, verify]), null, "another failing check follows the normal path");
+  const earlier = { check: "browser e2e", steps: [step(3, "pnpm install", "failure"), step(4, "verify preinstalled browser version", "failure")] };
+  assert.equal(environmentFailure(declared, [earlier]), null, "an earlier failing step is the cause");
+  assert.equal(environmentFailure(declared, [{ check: "browser e2e", steps: [step(4, "Verify preinstalled browser version", "failure")] }]), null, "names match exactly");
+  assert.equal(environmentFailure(declared, [{ check: "browser e2e", steps: null }]), null, "unreadable steps are not evidence");
+  assert.equal(environmentFailure(declared, [{ check: "browser e2e", steps: [step(4, "verify preinstalled browser version", "success")] }]), null, "no failing step");
+  assert.equal(environmentFailure(declared, []), null);
+  assert.equal(environmentFailure([], [e2e]), null);
+  const timedOut = { check: "browser e2e", steps: [step(4, "verify preinstalled browser version", "timed_out")] };
+  assert.ok(environmentFailure(declared, [timedOut]));
 });

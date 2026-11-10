@@ -49,7 +49,7 @@ recreate`).
 | `conflict` | A merge conflict; the update bot is asked to rebase once per head. |
 | `exhausted` | The bounded budget is used. A maintainer decides. |
 | `production-paused` | Production evidence is unhealthy or unreadable; queued merges are disabled. |
-| `needs-human` | Foreign commits, human or current-head threads, repeated interruptions, review findings only in files repair may not edit, or a repair of this head that proposed no change. |
+| `needs-human` | Foreign commits, human or current-head threads, repeated interruptions, review findings only in files repair may not edit, a repair of this head that proposed no change, or a failure at a declared environment check. |
 | `waiting-merge-path` | Green original; the repository's existing workflow merges it. |
 | `queued-merge` | Native auto-merge is queued for the validated head. |
 | `resolved` | The replacement merged and the original closed. |
@@ -186,11 +186,43 @@ from the credential-only `preflight` job.
    waits until none of them has a queued or running run, whatever concurrency
    group they use, so a handoff or rollback never overlaps an in-flight run.
 
+### Environment checks
+
+Some failures no edit in the pull request can fix. In Metriks #195 an npm group
+moved Playwright to 1.65.0 while the Dell runner image pinned 1.64.1; the
+`browser e2e` step `verify preinstalled browser version` failed, and a paid
+repair proposed nothing. Declare such a step:
+
+```json
+"ci": {
+  "requiredChecks": ["verify", "browser e2e"],
+  "environmentChecks": [
+    { "check": "browser e2e", "step": "verify preinstalled browser version",
+      "reason": "the Dell runner image pins Playwright; rebuild it in NoahJenkins/homelab first" }
+  ]
+}
+```
+
+`check` must be a required check; `check` and `step` match exactly. When
+every failed required check on the head stopped first at a declared step,
+the pull request goes to `needs-human` with the reason, before the free
+re-run and before any reservation or model call. Each check is judged by its
+first failing step (from the Actions job's step metadata, never its log), so
+a later diagnostics or cleanup step that fails as a consequence does not
+count. Any other failing check or step, or unreadable job metadata, follows
+the normal path. Re-run the checks once the environment is fixed.
+
+The policy is read from the default branch, but step names come from the
+workflow that ran, which a pull request can edit. A pull request that renames
+a failing step can only send itself to a maintainer; it cannot gain a repair,
+review, or merge.
+
 ### Policy keys
 
 | Key | Purpose |
 | --- | --- |
 | `ci.requiredChecks`, `ci.checkAppId` | Required check names and their publishing app (GitHub Actions `15368`). |
+| `ci.environmentChecks` | `[{check, step, reason}]`: a step of a required check that tests the CI environment, not the change (for example a runner image's pinned tool version). See below. |
 | `eligibility.updates` | `{ecosystem: "all" \| "non-major"}`. Unlisted ecosystems are out of scope. |
 | `eligibility.authors`, `securityMajors`, `maxChangedFiles` | Bot authors, security-major exception, file cap. |
 | `repair.editable`, `repair.protected`, `repair.context` | Model-editable globs; extra protected globs; extra context for the model. |

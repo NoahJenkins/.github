@@ -567,3 +567,35 @@ test("a green original behind main is brought up to date by the App once", async
   assert.equal(updates.length, 1, "once per head");
   assert.equal(updates[0].body.expected_head_sha, head);
 });
+
+// Metriks #195: the npm group moved Playwright to 1.65.0 while the Dell runner
+// image still pinned 1.64.1. The version check failed and one paid repair
+// proposed nothing. A declared environment check now reaches a maintainer first.
+test("a failure at a declared environment check reaches a maintainer with no re-run or reservation", async (t) => {
+  const reason = "the Dell runner image pins Playwright; rebuild it in homelab first";
+  const w = world((p) => ({ ...p, runtimes: [], ci: { ...p.ci, environmentChecks: [{ check: "browser e2e", step: "verify preinstalled browser version", reason }] } }));
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const step = (number, name, conclusion) => ({ number, name, conclusion });
+  for (const c of w.gh.checks.filter((x) => x.head_sha === w.head)) {
+    c.conclusion = c.name === "browser e2e" ? "failure" : "success";
+    w.gh.jobs.set(c.id, { id: c.id, name: c.name, steps: c.name === "browser e2e" ? [step(1, "Set up job", "success"), step(4, "verify preinstalled browser version", "failure"), step(5, "upload browser failure diagnostics", "failure")] : [step(1, "Set up job", "success")] });
+  }
+  for (let i = 0; i < 2; i++) {
+    const p = await runPlan({ ...w.ctx, now: NOW() });
+    assert.deepEqual(p.tasks, [], "no task is handed to inference");
+    assert.equal(p.rows[0].state, "needs-human");
+    assert.match(p.rows[0].detail, /browser e2e \/ verify preinstalled browser version/);
+  }
+  assert.deepEqual(ledgerOf(w.gh).entries, [], "no attempt is reserved");
+  assert.ok(!w.gh.writes.some((x) => /rerun/.test(x.path)), "a known environment failure is not re-run");
+  const status = w.gh.checks.find((c) => c.name === STATUS_CHECK && c.head_sha === w.head);
+  assert.equal(status.conclusion, "action_required");
+  assert.match(status.output.summary, /rebuild it in homelab first/);
+
+  // Another required check failing too is ordinary evidence: the normal path resumes.
+  w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify").conclusion = "failure";
+  w.gh.jobs.get(w.gh.checks.find((c) => c.head_sha === w.head && c.name === "verify").id).steps.push(step(3, "pnpm test", "failure"));
+  const mixed = await runPlan({ ...w.ctx, now: NOW() });
+  assert.equal(mixed.rows[0].state, "waiting-ci");
+  assert.match(mixed.rows[0].detail, /re-running the failed checks once/);
+});
