@@ -644,3 +644,16 @@ test("a pending sibling check withholds the environment verdict and reserves not
   assert.deepEqual(p.tasks, []);
   assert.deepEqual(ledgerOf(w.gh).entries, []);
 });
+
+test("a conflicting original reports what the repository's dependabot.yml says about rebasing", async (t) => {
+  const w = world();
+  t.after(() => rmSync(w.checkout.dir, { recursive: true, force: true }));
+  const config = "version: 2\nupdates:\n  - package-ecosystem: docker\n    directory: /apps/api\n    rebase-strategy: \"disabled\"\n";
+  const mainTree = new Map(w.gh.commits.get(w.main).tree);
+  mainTree.set(".github/dependabot.yml", config);
+  w.gh.refs.set("main", w.gh.commit(mainTree, [w.main], "dependabot config", "NoahJenkins"));
+  w.gh.pulls.get(167).mergeable_state = "dirty";
+  const plan = await runPlan(w.ctx);
+  assert.equal(plan.rows[0].state, "needs-human");
+  assert.match(plan.rows[0].detail, /rebase-strategy: disabled/);
+});

@@ -38,7 +38,10 @@ a behind original is rebased by asking the update bot (with the approver token)
 or, without one, by the App updating the branch from the default branch once
 per head. Dependabot stops rebasing a branch someone else pushed to, so a
 refreshed original that later conflicts goes to a maintainer (`@dependabot
-recreate`).
+recreate`). Without the approver token, a conflict waits for Dependabot to
+rebase it only where `.github/dependabot.yml` lets it: when every entry for the
+update's ecosystem sets `rebase-strategy: disabled` (RooferChat), the conflict
+goes to a maintainer (`@dependabot rebase`) instead.
 
 | State | Meaning |
 | --- | --- |
