@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { conclusionFor, decide } from "../src/decide.mjs";
-import { originalEligibility, replacementEligibility, updateKind } from "../src/eligibility.mjs";
+import { dependabotRebases, originalEligibility, replacementEligibility, updateKind } from "../src/eligibility.mjs";
 import { policy } from "./fixtures.mjs";
 
 const H = (c) => c.repeat(40);
@@ -95,9 +95,54 @@ test("conflicts ask the update bot to rebase once, and only with an account it o
   assert.equal(decide(s).action, "request-rebase");
   assert.deepEqual([decide({ ...s, marks: { rebase: true } }).state, decide({ ...s, marks: { rebase: true } }).action], ["conflict", "none"]);
   // ark canary: Dependabot ignores "@dependabot rebase" from an App ("only users with push access").
-  const app = decide({ ...s, canAskRebase: false });
+  const app = decide({ ...s, canAskRebase: false, autoRebase: true });
   assert.deepEqual([app.state, app.action], ["conflict", "none"]);
   assert.match(app.detail, /Dependabot rebases conflicting updates on its own/);
+});
+
+test("a conflict where Dependabot's rebase-strategy is disabled goes to a maintainer", () => {
+  // RooferChat #119: rebase-strategy "disabled", so the conflict never clears on its own.
+  const s = snap({ canAskRebase: false, autoRebase: false, original: { ...snap().original, pr: pr(119, H("1"), { mergeable_state: "dirty" }) } });
+  const d = decide(s);
+  assert.deepEqual([d.state, d.action], ["needs-human", "none"]);
+  assert.match(d.detail, /rebase-strategy/);
+  assert.match(d.detail, /@dependabot rebase/);
+  assert.doesNotMatch(d.detail, /on its own/);
+  // An unreadable configuration claims neither.
+  const unknown = decide({ ...s, autoRebase: null });
+  assert.equal(unknown.state, "conflict");
+  assert.doesNotMatch(unknown.detail, /rebases conflicting updates on its own;/);
+  assert.match(unknown.detail, /@dependabot rebase/);
+  // An approver token still asks, whatever the strategy.
+  assert.equal(decide({ ...s, canAskRebase: true }).action, "request-rebase");
+});
+
+test("dependabotRebases reads rebase-strategy for the update's ecosystem", () => {
+  const config = [
+    "version: 2",
+    "updates:",
+    '  - package-ecosystem: "npm" # app',
+    '    directory: "/"',
+    '    rebase-strategy: "disabled"',
+    "    groups:",
+    "      all:",
+    "        rebase-strategy: auto",
+    "  - package-ecosystem: github-actions",
+    "    directory: /",
+    "  - package-ecosystem: gomod",
+    "    directory: /a",
+    "    rebase-strategy: disabled",
+    "  - package-ecosystem: gomod",
+    "    directory: /b",
+    "",
+  ].join("\n");
+  assert.equal(dependabotRebases(config, "dependabot/npm_and_yarn/clerk-abc123"), false);
+  assert.equal(dependabotRebases(config, "dependabot/github_actions/actions/checkout-5"), true);
+  // Entries disagree; the directory is not recoverable from every branch name.
+  assert.equal(dependabotRebases(config, "dependabot/go_modules/x-1"), null);
+  assert.equal(dependabotRebases(config, "dependabot/docker/node-26"), null);
+  assert.equal(dependabotRebases(null, "dependabot/npm_and_yarn/x-1"), null);
+  assert.equal(dependabotRebases(config, "renovate/x"), null);
 });
 
 test("a behind original is evaluated, not re-requested every run", () => {

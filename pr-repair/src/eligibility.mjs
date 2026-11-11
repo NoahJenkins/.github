@@ -13,6 +13,40 @@ export function ecosystemOf(branch) {
   return m ? m[1] : null;
 }
 
+// Branch segments Dependabot uses for package-ecosystem values that differ.
+const BRANCH_ECOSYSTEM = { npm: "npm_and_yarn", gomod: "go_modules", gitsubmodule: "submodules", mix: "hex", "docker-compose": "docker_compose" };
+
+// Whether Dependabot rebases a conflicting update on its own: false when every
+// dependabot.yml entry for the branch's ecosystem sets rebase-strategy
+// "disabled" (RooferChat), true when none does, null when unknown or mixed.
+// Reads only each entry's own keys; a nested group key is not the entry's.
+export function dependabotRebases(config, branch) {
+  const eco = ecosystemOf(branch);
+  if (!config || !eco) return null;
+  const entries = [];
+  let entry = null;
+  let keyIndent = -1;
+  for (const raw of String(config).split("\n")) {
+    const line = raw.replace(/\s+#.*$/, "");
+    const item = /^(\s*)-\s+package-ecosystem:\s*(.+)$/.exec(line);
+    if (item) {
+      entry = { ecosystem: unquote(item[2]), rebase: "auto" };
+      keyIndent = item[1].length + 2;
+      entries.push(entry);
+      continue;
+    }
+    const key = /^(\s*)rebase-strategy:\s*(.+)$/.exec(line);
+    if (entry && key && key[1].length === keyIndent) entry.rebase = unquote(key[2]);
+  }
+  const mine = entries.filter((e) => (BRANCH_ECOSYSTEM[e.ecosystem] ?? e.ecosystem.replace(/-/g, "_")) === eco);
+  if (!mine.length) return null;
+  if (mine.every((e) => e.rebase === "disabled")) return false;
+  if (mine.every((e) => e.rebase !== "disabled")) return true;
+  return null;
+}
+
+const unquote = (v) => v.trim().replace(/^(["'])(.*)\1$/, "$2");
+
 // Reads only the title and Dependabot's own "Bumps ..."/"Updates ..." sentences;
 // release notes quoted in the body are not evidence. Sentence punctuation after
 // a version ("to 7.0.153.") is not part of it.

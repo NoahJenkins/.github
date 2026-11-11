@@ -2,10 +2,10 @@
 // reserve model and sync work durably, and publish an actionable status.
 import { NO_CHANGE, conclusionFor, decide, STATES } from "./decide.mjs";
 import { digest } from "./digest.mjs";
-import { REPLACEMENT_PREFIX, originalEligibility, parseProvenance, replacementEligibility } from "./eligibility.mjs";
+import { REPLACEMENT_PREFIX, dependabotRebases, originalEligibility, parseProvenance, replacementEligibility } from "./eligibility.mjs";
 import { encodeLedger, mark, marked, prune, readLedger, reserve, RESERVATION_TTL, transition, usage } from "./ledger.mjs";
 import { inferenceGaps } from "./policy.mjs";
-import { driftOverlap, fieldFilesAt, originalRequest, soundRefreshes, syncFor } from "./repo.mjs";
+import { driftOverlap, fieldFilesAt, fileAt, originalRequest, soundRefreshes, syncFor } from "./repo.mjs";
 import { STATUS_CHECK, ciState, classifyThreads, codexState, environmentFailure, findingFiles, productionHealth, reviewResult, reviewThreads } from "./signals.mjs";
 
 export const STATE_LABEL = "pr-repair";
@@ -241,6 +241,8 @@ export async function runPlan(ctx) {
   }
   // GitHub reports "behind" only when protection requires an up-to-date branch.
   const strict = true;
+  // Whether Dependabot rebases conflicts itself depends on its own config.
+  const dependabotConfig = (await fileAt(gh, repo, ".github/dependabot.yml", ctx.baseSha)) ?? (await fileAt(gh, repo, ".github/dependabot.yaml", ctx.baseSha));
 
   const open = await gh.paginate(`/repos/${repo}/pulls?state=open&base=${policy.defaultBranch}`);
   const originals = open.filter((p) => policy.eligibility.authors.includes(p.user?.login));
@@ -275,6 +277,7 @@ export async function runPlan(ctx) {
         productionReason: `Merges paused: ${production.reason}.`,
         strict,
         canAskRebase: Boolean(ctx.approverGh),
+        autoRebase: dependabotRebases(dependabotConfig, o.head.ref),
         botLogin: ctx.botLogin,
         baseSha: ctx.baseSha,
         limits: policy.repair.limits,
