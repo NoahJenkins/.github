@@ -80,10 +80,16 @@ async function codexAcked(ctx, commentId) {
   return reactions.some((r) => r.user?.login === CODEX_BOT && r.content === "eyes");
 }
 
+// A trigger token without access to this repository cannot ask Codex; the backup review still can.
 async function requestCodex(ctx, number) {
-  const c = await ctx.triggerGh.post(`/repos/${ctx.repo}/issues/${number}/comments`, { body: "@codex review" });
-  ctx.log(`requested Codex review (comment ${c.id})`);
-  return c.id;
+  try {
+    const c = await ctx.triggerGh.post(`/repos/${ctx.repo}/issues/${number}/comments`, { body: "@codex review" });
+    ctx.log(`requested Codex review (comment ${c.id})`);
+    return { id: c.id };
+  } catch (e) {
+    if (![401, 403, 404].includes(e.status)) throw e;
+    return { error: `cannot request Codex (HTTP ${e.status})` };
+  }
 }
 
 export async function waitForCodex(ctx, number, sha) {
@@ -92,7 +98,8 @@ export async function waitForCodex(ctx, number, sha) {
   if (ctx.dryRun) return { done: false, kind: "error", reason: "dry run: Codex not requested" };
 
   const requestedAt = Date.now() - 10000;
-  let commentId = await requestCodex(ctx, number);
+  let request = await requestCodex(ctx, number);
+  if (request.error) return { done: true, kind: "error", reason: request.error };
   let acked = false;
   let reasked = false;
   const start = Date.now();
@@ -102,11 +109,12 @@ export async function waitForCodex(ctx, number, sha) {
     if (pr.state !== "open" || pr.head.sha !== sha) return { done: true, kind: "moved" };
     const v = await readCodex(ctx, number, sha, requestedAt);
     if (v.done) return v;
-    acked ||= v.running || v.activity || (await codexAcked(ctx, commentId));
+    acked ||= v.running || v.activity || (await codexAcked(ctx, request.id));
     if (!acked && Date.now() - start > TIMING.ack) {
       if (reasked) return { done: true, kind: "error", reason: "Codex did not respond" };
       ctx.log("no Codex acknowledgement; asking once more");
-      commentId = await requestCodex(ctx, number);
+      request = await requestCodex(ctx, number);
+      if (request.error) return { done: true, kind: "error", reason: request.error };
       reasked = true;
     }
   }
