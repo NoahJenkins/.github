@@ -57,7 +57,9 @@ Rules that keep it safe and stall-free:
    - `AI_GATEWAY_API_KEY`: Vercel AI Gateway key for the backup review.
    - `CODEX_TRIGGER_TOKEN` (optional): fine-grained token of a Codex-linked user,
      with Pull requests and Issues write on the repository. Codex may ignore
-     `@codex review` comments posted by `github-actions`.
+     `@codex review` comments posted by `github-actions`. Add each new
+     repository to the token's repository access. Until you do, the token gets
+     HTTP 403 and the gate uses the backup review.
 3. Copy [`examples/review-gate.yml`](examples/review-gate.yml) to
    `.github/workflows/review-gate.yml` and pin the SHA.
 4. Optional: add `.github/review-policy.json`:
