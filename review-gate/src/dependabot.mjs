@@ -22,38 +22,63 @@ export function bumpKind(from, to) {
 }
 
 // A container digest moved under an unchanged tag: "from `e697c81` to `935c3c5`".
-// Both sides must contain a hex letter so a plain number is never read as a digest.
-const DIGEST_RE = /from `?(?:sha256:)?([0-9a-f]{7,64})`? to `?(?:sha256:)?([0-9a-f]{7,64})`?/gi;
-const isDigest = (h) => /[a-f]/i.test(h);
+// Both sides must contain a hex letter so a plain number is never read as a
+// digest. Only Docker branches qualify: a hash bump elsewhere (a submodule or a
+// git dependency) can move any distance.
+const DIGEST_RE = /from `?(?:sha256:)?([0-9a-f]{7,64})`? to `?(?:sha256:)?([0-9a-f]{7,64})`?(?![\w.-])/gi;
+const isDigest = (h) => /^[0-9a-f]{7,64}$/i.test(h) && /[a-f]/i.test(h);
+const DOCKER_BRANCH_RE = /^dependabot\/docker(?:_compose)?\//;
 
 // Files whose only legitimate Dependabot change is a `uses:` pin bump.
 const ACTION_FILE_RE = /^(\.github\/workflows\/[^/]+\.ya?ml|(?:[^/]+\/)*action\.ya?ml)$/;
-// One changed line: `uses: owner/repo[/path]@<40-hex sha> # v1.2.3`.
-const USES_LINE_RE = /^[+-]\s*(?:-\s+)?uses:\s+([\w.-]+\/[\w./-]+)@([0-9a-f]{40})(?:\s+#\s*v?([\w.+-]+))?\s*$/;
+// One changed line: `uses: owner/repo[/path]@<40-hex sha> # v1.2.3`. Group 2 is
+// everything before the `@` (indentation, list dash, action name).
+const USES_LINE_RE = /^([+-])(\s*(?:-\s+)?uses:\s+[\w.-]+\/[\w./-]+)@([0-9a-f]{40})(?:\s+#\s*v?([\w.+-]+))?\s*$/;
 
-// null when `files` is not purely `uses:` SHA-pin bumps; otherwise one bump
-// kind per action. The bump kinds come from the `# vX.Y.Z` comments in the diff.
+// null when `files` is not purely in-place `uses:` SHA-pin bumps; otherwise one
+// bump kind per action. Each run of removed lines must be followed directly by
+// the same number of added lines, and each pair must be the same line apart
+// from the SHA and the version comment (same indentation, dash, and action),
+// so no step can move, merge, or change action. Bump kinds come from the
+// `# vX.Y.Z` comments ("unknown" when a side has none).
 export function pinBumps(files) {
   if (!files.length || !files.every((f) => ACTION_FILE_RE.test(f.filename) && (f.status ?? "modified") === "modified")) return null;
   const kinds = [];
   for (const f of files) {
     if (typeof f.patch !== "string" || !f.patch) return null;
-    const removed = [];
-    const added = [];
+    let removed = [];
+    let added = [];
+    let pairs = 0;
+    const flush = () => {
+      if (removed.length !== added.length) return false;
+      for (let i = 0; i < removed.length; i++) {
+        const [r, a] = [removed[i], added[i]];
+        if (r.prefix !== a.prefix || r.sha === a.sha) return false; // moved, re-indented, another action, or no real change
+        kinds.push(r.version && a.version ? bumpKind(r.version, a.version) : "unknown");
+      }
+      pairs += removed.length;
+      removed = [];
+      added = [];
+      return true;
+    };
     for (const line of f.patch.split("\n")) {
-      if (line.startsWith("@@") || line.startsWith(" ") || line === "" || line.startsWith("\\")) continue;
+      if (line.startsWith("\\")) continue; // "\ No newline at end of file" may sit between - and +
+      if (line.startsWith("@@") || line.startsWith(" ") || line === "") {
+        if (!flush()) return null;
+        continue;
+      }
       const m = USES_LINE_RE.exec(line);
       if (!m) return null;
-      (line[0] === "-" ? removed : added).push({ name: m[1], sha: m[2], version: m[3] });
+      const entry = { prefix: m[2], sha: m[3], version: m[4] };
+      if (m[1] === "-") {
+        if (added.length) return null; // git lists a run's removals before its additions
+        removed.push(entry);
+      } else {
+        if (!removed.length) return null; // an added line that replaces nothing
+        added.push(entry);
+      }
     }
-    if (!removed.length || removed.length !== added.length) return null;
-    const pending = new Map();
-    for (const r of removed) pending.set(r.name, [...(pending.get(r.name) ?? []), r]);
-    for (const a of added) {
-      const r = pending.get(a.name)?.shift();
-      if (!r || r.sha === a.sha) return null; // a different action, or no real change
-      kinds.push(r.version && a.version ? bumpKind(r.version, a.version) : "unknown");
-    }
+    if (!flush() || !pairs) return null;
   }
   return kinds;
 }
@@ -61,17 +86,25 @@ export function pinBumps(files) {
 export function dependabotDecision({ title = "", body = "", labels = [], files = [], branch = "" }, policy) {
   if (labels.includes(policy.force_review_label)) return { pass: false, reason: "labelled for maintainer review" };
   const actionsBranch = branch.startsWith("dependabot/github_actions/");
+  const dockerBranch = DOCKER_BRANCH_RE.test(branch);
   const pins = actionsBranch ? pinBumps(files) : null;
   if (!pins && files.some((f) => f.filename.startsWith(".github/") || (actionsBranch && ACTION_FILE_RE.test(f.filename)))) return { pass: false, reason: "changes .github/ (Actions or automation)" };
   const text = `${title}\n${body.split("\n").slice(0, 80).join("\n")}`;
-  let bumps = pins ?? [];
-  if (!pins) {
-    bumps = [...text.matchAll(BUMP_RE)].map((m) => bumpKind(m[1], m[2]));
-    for (const m of text.matchAll(DIGEST_RE)) if (isDigest(m[1]) && isDigest(m[2])) bumps.push("minor-or-patch");
-  } else if (pins.includes("unknown")) {
-    // A pin without a readable version comment: fall back to the PR text.
-    bumps = [...text.matchAll(BUMP_RE)].map((m) => bumpKind(m[1], m[2]));
-    if (!bumps.length || bumps.length < pins.length) return { pass: false, reason: "could not read the version change" };
+  // Version changes named in the PR text. On Docker branches a digest pair is a
+  // same-tag rebuild, not a version number that happens to start with a digit.
+  const textBumps = () => {
+    const out = [];
+    for (const m of text.matchAll(BUMP_RE)) if (!(dockerBranch && isDigest(m[1]) && isDigest(m[2]))) out.push(bumpKind(m[1], m[2]));
+    if (dockerBranch) for (const m of text.matchAll(DIGEST_RE)) if (isDigest(m[1]) && isDigest(m[2])) out.push("minor-or-patch");
+    return out;
+  };
+  let bumps = pins ?? textBumps();
+  if (pins?.includes("unknown")) {
+    // A pin without a readable version comment: the PR text must account for
+    // it, and every pin whose comments were readable still counts.
+    const fromText = textBumps();
+    if (!fromText.length || fromText.length < pins.length) return { pass: false, reason: "could not read the version change" };
+    bumps = [...pins.filter((k) => k !== "unknown"), ...fromText];
   }
   if (!bumps.length) return { pass: false, reason: "could not read the version change" };
   if (bumps.includes("unknown")) return { pass: false, reason: "non-semver version change" };

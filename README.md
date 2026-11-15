@@ -76,11 +76,12 @@ Rules that keep it safe and stall-free:
   gate escalates instead of looping.
 - Dependabot runs get no Actions secrets, so Dependabot pull requests are
   decided from their own text: patch/minor semver updates pass (including
-  container digest-only and PEP 440 `.postN`/`.devN` bumps), and majors and
+  container digest-only bumps on Docker branches and PEP 440 `.postN`/`.devN`
+  bumps), and majors and
   unreadable versions need a maintainer. A `dependabot/github_actions/*` pull
   request that touches `.github/` passes only when every changed line is a
-  `uses: owner/repo@<40-hex sha> # vX.Y.Z` pin bump of the same actions at patch
-  or minor. Anything else under `.github/` still needs a maintainer. The trust
+  `uses: owner/repo@<40-hex sha> # vX.Y.Z` pin bump, in place (same line apart
+  from the SHA and comment), at patch or minor. Anything else under `.github/` still needs a maintainer. The trust
   trade-off: the new SHA is not verified to belong to the tag in the comment, so
   a compromised upstream release would merge once required CI is green. Pin
   bumps are the point of Dependabot, and its `cooldown` is the mitigation.

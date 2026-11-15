@@ -26,9 +26,14 @@ test("real Dependabot titles from your repositories", () => {
   assert.equal(d("fix: bump @clerk/backend from 3.26.4 to 3.26.5 in the clerk-backend group").pass, true);
   assert.equal(d("chore(deps): bump ai from 6.0.238 to 7.0.153").pass, false);
   assert.equal(d("Bump node from 24.20.0-bookworm-slim to 26.13.0-bookworm-slim in /services/x").reason, "major version update");
-  assert.equal(d("Bump playwright from `d65108d` to `47b510d` in /services/opt").pass, true, "digest-only bump");
-  assert.equal(d("Bump python from `e697c81` to `935c3c5` in /services/x").pass, true, "digest-only bump (homelab #275)");
-  assert.equal(d("Bump x from 1234567 to 1234568").pass, false, "a plain number is not a digest");
+  const docker = (title, branch = "dependabot/docker/services/x/python-935c3c5") => dependabotDecision({ title, files, branch }, policy);
+  assert.equal(docker("Bump playwright from `d65108d` to `47b510d` in /services/opt").pass, true, "digest-only bump");
+  assert.equal(docker("Bump python from `e697c81` to `935c3c5` in /services/x").pass, true, "digest-only bump (homelab #275)");
+  assert.equal(docker("Bump python from `1e697c8` to `935c3c5` in /services/x").pass, true, "a digest that starts with a digit is still a digest");
+  assert.equal(docker("Bump python from `e697c81` to `935c3c5`", "dependabot/docker_compose/services/x/python-935c3c5").pass, true);
+  assert.equal(d("Bump python from `e697c81` to `935c3c5` in /services/x").pass, false, "digests count only on Docker branches");
+  assert.equal(docker("Bump vendor/lib from `abc1234` to `def5678`", "dependabot/submodules/vendor/lib-def5678").pass, false, "a submodule commit bump can move any distance");
+  assert.equal(docker("Bump x from 1234567 to 1234568").pass, false, "a plain number is not a digest");
   assert.equal(d("Bump pytest-asyncio from 1.4.1 to 1.4.1.post1").pass, true, "PEP 440 post release (homelab #278)");
   assert.equal(d("Bump pytest from 1.4.1 to 2.0.0.post1").pass, false);
   assert.equal(d("Bump the container-images group across 5 directories with 5 updates").reason, "could not read the version change");
@@ -72,4 +77,24 @@ test("Actions pin bumps at patch or minor pass; everything else still needs a ma
   assert.equal(act([wf(bare)], "Bump actions/checkout from 4.3.1 to 4.3.2").pass, true);
   assert.equal(act([wf(bare)], "Bump actions/checkout from 4.3.1 to 5.0.0").pass, false);
   assert.equal(act([wf(bare)], "Bump the group").pass, false);
+});
+
+test("Actions pin bumps must be in place: no moved, re-indented, reordered, or added lines", () => {
+  const ok = (p) => act([wf(p)]).pass;
+  const [A, B, C, D] = ["a", "b", "c", "d"].map(sha);
+  // Two adjacent pins changed in one run, as git prints them.
+  assert.equal(ok(`@@ -10,2 +10,2 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n-      - uses: actions/setup-node@${C} # v4.4.0\n+      - uses: actions/checkout@${B} # v4.3.2\n+      - uses: actions/setup-node@${D} # v4.5.0`), true);
+  assert.equal(ok(`@@ -10,1 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n\\ No newline at end of file\n+      - uses: actions/checkout@${B} # v4.3.2\n\\ No newline at end of file`), true);
+  // A dash dropped or the indentation changed merges the step into another one.
+  assert.equal(ok(`@@ -10,2 +10,2 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+        uses: actions/checkout@${B} # v4.3.2\n         with:`), false);
+  // The pin removed in one place and added in another job.
+  assert.equal(ok(`@@ -10,2 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n         with:\n@@ -50,1 +49,2 @@\n   other:\n+      - uses: actions/checkout@${B} # v4.3.2`), false);
+  assert.equal(ok(`@@ -10,1 +10,1 @@\n+      - uses: actions/checkout@${B} # v4.3.2\n-      - uses: actions/checkout@${A} # v4.3.1`), false, "addition before removal");
+  assert.equal(ok(`@@ -10,1 +10,2 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/checkout@${B} # v4.3.2\n+      - uses: evil/x@${C} # v1.0.0`), false, "an extra pinned step");
+  assert.equal(ok(`@@ -10,1 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/cache@${B} # v4.3.2`), false, "same owner, another action");
+  assert.equal(ok(`@@ -10,2 +10,2 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/checkout@${B} # v4.3.2\n-        with: { ref: main }\n+        with: { ref: other }`), false, "a changed with:");
+  assert.equal(ok(`@@ -10,1 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/checkout@${A} # v4.3.2`), false, "comment-only change");
+  // A grouped PR mixing a commented major with an uncommented pin: the major still counts.
+  const mixed = `@@ -10,1 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/checkout@${B} # v5.0.0\n@@ -20,1 +20,1 @@\n-      - uses: foo/bar@${C}\n+      - uses: foo/bar@${D}`;
+  assert.equal(act([wf(mixed)], "Bump the actions group with 2 updates", "Updates `foo/bar` from 1.0.0 to 1.0.1\nBump baz from 2.1.0 to 2.2.0").reason, "major version update");
 });
