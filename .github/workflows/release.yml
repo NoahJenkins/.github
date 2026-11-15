@@ -1,0 +1,78 @@
+name: release
+
+# Tags a plain vX.Y.Z (and a GitHub release) after `test` passes on main, so
+# callers can pin `uses: NoahJenkins/.github@<sha> # vX.Y.Z` and let their
+# Dependabot (github-actions ecosystem) bump the SHA and the comment together.
+#   - patch by default; label the merged PR `semver:minor` or `semver:major`
+#   - no release when no action code changed (docs, tests, workflows only)
+#   - idempotent: a commit that already has a version tag is left alone
+#   - GITHUB_TOKEN only; a tag it pushes triggers no further workflows, which is fine here
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump. A manual run always releases.
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the tag and the release
+      pull-requests: read # read the merged pull request's labels
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          MANUAL: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if git tag --points-at "$SHA" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "already released"
+            exit 0
+          fi
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -n "$last" ] && [ -z "$MANUAL" ] && \
+             [ -z "$(git diff --name-only "$last" "$SHA" -- action.yml pr-repair review-gate ':!**/test/**' ':!**/*.md')" ]; then
+            echo "no action code changed since $last"
+            exit 0
+          fi
+          bump=${MANUAL:-patch}
+          labels=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" --jq '[.[].labels[].name] | join(",")' || true)
+          case ",$labels," in
+            *,semver:major,*) bump=major ;;
+            *,semver:minor,*) if [ "$bump" = patch ]; then bump=minor; fi ;;
+          esac
+          IFS=. read -r ma mi pa <<<"${last#v}"
+          ma=${ma:-0}; mi=${mi:-0}; pa=${pa:-0}
+          if [ -z "$last" ]; then
+            next=v1.0.0
+          else
+            case $bump in
+              major) next="v$((ma + 1)).0.0" ;;
+              minor) next="v$ma.$((mi + 1)).0" ;;
+              *) next="v$ma.$mi.$((pa + 1))" ;;
+            esac
+          fi
+          echo "releasing $next ($bump) at $SHA"
+          gh release create "$next" --target "$SHA" --title "$next" --generate-notes

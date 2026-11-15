@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Pins in .github/workflows (/) and in the composite actions' action.yml
+  # (/pr-repair). Every merged bump is a patch release (see release.yml), which
+  # callers then pick up through their own Dependabot.
+  - package-ecosystem: github-actions
+    directories: ["/", "/pr-repair"]
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]

@@ -42,6 +42,10 @@ export class FakeGitHub {
       if (!x) throw Object.assign(new Error("404"), { status: 404 });
       return structuredClone(x);
     }
+    if (p === `${r}/pulls`) return this.paginate(path);
+    if ((m = p.match(new RegExp(`^${r}/actions/workflows/([^/]+)/runs$`))) && !this.workflowRuns?.[decodeURIComponent(m[1])]) return { workflow_runs: this.runs };
+    if (p === `${r}/deployments`) return (this.deployments ?? []).filter((d) => !query.environment || d.environment === query.environment);
+    if ((m = p.match(new RegExp(`^${r}/deployments/(\\d+)/statuses$`)))) return (this.deploymentStatuses ?? {})[m[1]] ?? [];
     if ((m = p.match(new RegExp(`^${r}/compare/(\\w+)\\.\\.\\.(\\w+)$`)))) return this.compare(m[1], m[2]);
     if ((m = p.match(new RegExp(`^${r}/contents/(.+)$`)))) {
       const t = this.commits.get(query.ref)?.tree;

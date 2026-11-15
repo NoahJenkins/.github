@@ -63,7 +63,11 @@ export const isVercelGateway = (endpoint) => {
 };
 
 // files: Map(name -> content) of curated data. Returns {result, usage}.
-export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt, files, fetcher = fetch, timeoutMs = 15 * 60000, gatewayCaching = isVercelGateway(endpoint) }) {
+// Transient failures (network errors, 408, 429, 5xx) are retried up to
+// `retries` times without consuming a model call: the provider billed nothing.
+const TRANSIENT = (status) => status === 408 || status === 429 || status >= 500;
+
+export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt, files, fetcher = fetch, timeoutMs = 15 * 60000, gatewayCaching = isVercelGateway(endpoint), retries = 2, retryDelayMs = 2000 }) {
   if (!endpoint || !apiKey || !model || !budget) throw new TransportError("configuration", "endpoint, credential, model, and budget are all required");
   const maxCalls = budget.maxCalls[kind];
   const call = service(files);
@@ -78,23 +82,37 @@ export async function runOpenAI({ endpoint, apiKey, model, budget, kind, prompt,
     const remaining = budget.maxOutputTokens - usage.completionTokens;
     if (remaining <= 0) throw new TransportError("budget", "output token budget exhausted");
     if (Date.now() >= deadline) throw new TransportError("timeout", "inference deadline reached");
-    usage.requests++;
     // The last allowed call must answer: a budget spent only on reading
     // leaves a paid attempt with nothing (Metriks #186 review).
-    const last = usage.requests === maxCalls;
+    const last = usage.requests + 1 === maxCalls;
     if (last) messages.push({ role: "user", content: "This is your final request and read_data is no longer available. Return the required JSON now from what you have read." });
+    const body = JSON.stringify({ model, messages, tools: [TOOL], tool_choice: last ? "none" : "auto", max_tokens: remaining, ...(gatewayCaching ? { providerOptions: { gateway: { caching: "auto" } } } : {}) });
     let res;
-    try {
-      res = await fetcher(`${endpoint.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, tools: [TOOL], tool_choice: last ? "none" : "auto", max_tokens: remaining, ...(gatewayCaching ? { providerOptions: { gateway: { caching: "auto" } } } : {}) }),
-        redirect: "error",
-        signal: AbortSignal.timeout(Math.max(1000, Math.min(180000, deadline - Date.now()))),
-      });
-    } catch (e) {
-      throw new TransportError(e.name === "TimeoutError" ? "timeout" : "network", "request did not complete");
+    for (let attempt = 0; ; attempt++) {
+      let wait = retryDelayMs * 2 ** attempt;
+      let failure;
+      try {
+        res = await fetcher(`${endpoint.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+          body,
+          redirect: "error",
+          signal: AbortSignal.timeout(Math.max(1000, Math.min(180000, deadline - Date.now()))),
+        });
+        if (res.ok || !TRANSIENT(res.status)) break;
+        const retryAfter = Number(res.headers?.get?.("retry-after"));
+        if (retryAfter > 0) wait = Math.min(retryAfter * 1000, 60000);
+        failure = new TransportError(category(res.status), `HTTP ${res.status}`);
+      } catch (e) {
+        if (e instanceof TransportError) throw e;
+        // A request that hit its own time limit is not retried: it may have been billed.
+        failure = new TransportError(e.name === "TimeoutError" ? "timeout" : "network", "request did not complete");
+        if (failure.category === "timeout") throw failure;
+      }
+      if (attempt >= retries || Date.now() + wait >= deadline) throw failure;
+      await new Promise((r) => setTimeout(r, wait));
     }
+    usage.requests++;
     if (!res.ok) throw new TransportError(category(res.status), `HTTP ${res.status}`);
     let data;
     try {

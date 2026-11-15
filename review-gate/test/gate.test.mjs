@@ -23,3 +23,10 @@ test("a trigger token without repository access hands off to the backup review",
 test("other request errors still fail the run", async () => {
   await assert.rejects(waitForCodex(ctx(async () => { throw denied(422); }), 1, HEAD), /422/);
 });
+
+test("timing budget: Codex plus backup plus margin fit inside the deadline", async () => {
+  const { TIMING } = await import("../src/gate.mjs");
+  assert.ok(TIMING.codex + TIMING.backup + TIMING.margin <= TIMING.deadline);
+  assert.ok(TIMING.poll >= 45000, "polling stays at one request round per minute or slower");
+  assert.ok(TIMING.deadline < 40 * 60000, "the caller job timeout is 40 minutes");
+});

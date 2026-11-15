@@ -180,7 +180,8 @@ from the credential-only `preflight` job.
    variable and its private key in the controller environment.
 2. Put the provider credential in a separate inference environment.
 3. Add `.github/pr-repair.json` (keys below) and copy
-   [`examples/pr-repair.yml`](../examples/pr-repair.yml), pinning the full SHA.
+   [`examples/pr-repair.yml`](../examples/pr-repair.yml), pinning `@<full sha> # vX.Y.Z`
+   (Dependabot keeps it current; see the repository README).
 4. Merge the caller. It reports status only until `PR_REPAIR_ENABLED` (or the
    caller's equivalent variable) is `true`.
 5. Disable any other controller for the same pull requests first. The caller

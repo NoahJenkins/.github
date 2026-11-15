@@ -86,8 +86,9 @@ for (const [name, status, category] of [["auth", 401, "authentication"], ["quota
   test(`transport: HTTP ${status} is a typed ${name} failure`, async () => {
     const f = await fake((n, b, res) => reply(res, status, {}));
     try {
-      await assert.rejects(call(f.endpoint), (e) => e.category === category);
-      assert.equal(f.seen.length, 1, "paid calls are never retried silently");
+      await assert.rejects(call(f.endpoint, { retryDelayMs: 1 }), (e) => e.category === category);
+      // Transient failures bill nothing, so they are retried (twice); the rest are not.
+      assert.equal(f.seen.length, [429, 503].includes(status) ? 3 : 1);
     } finally { f.close(); }
   });
 }

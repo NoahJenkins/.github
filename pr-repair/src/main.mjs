@@ -67,17 +67,24 @@ async function main() {
       credentialReady: env.PR_REPAIR_CREDENTIAL_READY === "true",
       exclusiveActive: env.PR_REPAIR_EXCLUSIVE_ACTIVE === "true",
       exclusiveWorkflows: (env.PR_REPAIR_EXCLUSIVE_WORKFLOWS || "").split(",").map((w) => w.trim()).filter((w) => /^[\w.-]+\.ya?ml$/.test(w)),
+      refSha: head,
       now: new Date().toISOString(),
       runUrl,
       log,
     };
     const { tasks, rows, gaps, production } = await runPlan(ctx);
     output({ tasks, has_tasks: tasks.length > 0 ? "true" : "false" });
-    summary(`## pr-repair\n\nEnabled: ${ctx.enabled}. Production: ${production.healthy ? "healthy" : production.reason}.${gaps.length ? ` Paid work paused: ${gaps.join("; ")}.` : ""}\n`);
+    summary(`## pr-repair\n\nEnabled: ${ctx.enabled}. Production: ${production.skipped ? production.reason : production.healthy ? "healthy" : production.reason}.${gaps.length ? ` Paid work paused: ${gaps.join("; ")}.` : ""}\n`);
     summary(["| Update | Working PR | State | Detail |", "| --- | --- | --- | --- |", ...rows.map((r) => `| #${r.number} | #${r.target} | ${r.state} | ${String(r.detail).replace(/\|/g, "\\|")} |`)].join("\n"));
     for (const r of rows) if (conclusionFor(r.state) === "action_required") console.log(`::warning title=pr-repair #${r.number}::${r.state}: ${String(r.detail).replace(/\n/g, " ")}`);
     summary(`\nReserved tasks: ${tasks.map((t) => `${t.kind} #${t.target}`).join(", ") || "none"}.`);
-    if (ctx.failed) throw new Error("one or more pull requests could not be evaluated; see the log and dashboard");
+    if (ctx.failed) {
+      // Reservations are already durable and have outputs for the later jobs:
+      // failing the job here would strand them and burn the attempts. Report
+      // the evaluation error loudly, and fail only when there is no work to carry on.
+      console.log("::error title=pr-repair::one or more pull requests could not be evaluated; see the log and dashboard");
+      if (tasks.length === 0) throw new Error("one or more pull requests could not be evaluated; see the log and dashboard");
+    }
     return;
   }
 

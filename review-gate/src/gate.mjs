@@ -11,13 +11,19 @@ export const ESCALATION_LABEL = "needs-human";
 export const UNAVAILABLE = "Review unavailable";
 
 const MIN = 60000;
+// codex (20) + backup (12) + margin (1) fit inside the deadline (34); the
+// caller job has timeout-minutes: 40. The backup is also capped by the time
+// actually left, and is retried only when enough remains.
 export const TIMING = {
-  poll: 20000,
-  ack: 5 * MIN, // no 👀 from Codex: ask once more
+  poll: 60000,
+  ack: 5 * MIN, // no 👀 from Codex: ask once more (counted from each request)
   codex: 20 * MIN, // no Codex result: run the backup
   backup: 12 * MIN,
-  deadline: 34 * MIN, // the caller job has timeout-minutes: 40
+  deadline: 34 * MIN,
+  margin: MIN, // left for posting the review and the final status
+  retryMin: 8 * MIN, // a second backup attempt needs at least this much left
 };
+const timeLeft = (ctx) => (ctx.startedAt ?? Date.now()) + TIMING.deadline - Date.now() - TIMING.margin;
 const MAX_DIFF_BYTES = 400000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -66,9 +72,13 @@ export async function escalate(ctx, number, sha, state, reason) {
   });
 }
 
+// With requestedAt, only comments updated since our request are read: every
+// verdict signal after the request is such a comment, and older state was
+// already read before the request was posted.
 async function readCodex(ctx, number, sha, requestedAt) {
+  const since = requestedAt === null ? "" : `?since=${encodeURIComponent(new Date(requestedAt).toISOString())}`;
   const [comments, reviews] = await Promise.all([
-    ctx.gh.paginate(`/repos/${ctx.repo}/issues/${number}/comments`),
+    ctx.gh.paginate(`/repos/${ctx.repo}/issues/${number}/comments${since}`),
     ctx.gh.paginate(`/repos/${ctx.repo}/pulls/${number}/reviews`),
   ]);
   return codexVerdict({ headSha: sha, comments, reviews, requestedAt });
@@ -103,6 +113,7 @@ export async function waitForCodex(ctx, number, sha) {
   let acked = false;
   let reasked = false;
   const start = Date.now();
+  let askedAt = start;
   while (Date.now() - start < TIMING.codex) {
     await sleep(TIMING.poll);
     const pr = await ctx.gh.get(`/repos/${ctx.repo}/pulls/${number}`);
@@ -110,12 +121,13 @@ export async function waitForCodex(ctx, number, sha) {
     const v = await readCodex(ctx, number, sha, requestedAt);
     if (v.done) return v;
     acked ||= v.running || v.activity || (await codexAcked(ctx, request.id));
-    if (!acked && Date.now() - start > TIMING.ack) {
+    if (!acked && Date.now() - askedAt > TIMING.ack) {
       if (reasked) return { done: true, kind: "error", reason: "Codex did not respond" };
       ctx.log("no Codex acknowledgement; asking once more");
       request = await requestCodex(ctx, number);
       if (request.error) return { done: true, kind: "error", reason: request.error };
       reasked = true;
+      askedAt = Date.now(); // the second request gets its own full window
     }
   }
   return { done: true, kind: "error", reason: `Codex gave no result in ${TIMING.codex / MIN} min` };
@@ -157,7 +169,16 @@ export async function backupReview(ctx, pr, files, c, codexReason) {
   const dir = await checkoutCommit({ repoFullName: ctx.repo, sha: pr.head.sha, token: ctx.token });
   let result;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    result = await runBackupReview({ dir, diff, prompt, model: ctx.fallbackModel, version: ctx.claudeVersion, gatewayKey: ctx.gatewayKey, timeoutMs: TIMING.backup });
+    const left = timeLeft(ctx);
+    if (attempt === 2 && left < TIMING.retryMin) {
+      ctx.log(`no second backup attempt: ${Math.round(left / MIN)} min left`);
+      break;
+    }
+    if (left < 2 * MIN) {
+      result = { ok: false, error: "no time left for the backup review" };
+      break;
+    }
+    result = await runBackupReview({ dir, diff, prompt, model: ctx.fallbackModel, version: ctx.claudeVersion, gatewayKey: ctx.gatewayKey, timeoutMs: Math.min(TIMING.backup, left) });
     ctx.log(`backup review attempt ${attempt}: ${result.ok ? result.verdict : result.error} (cost $${(result.cost || 0).toFixed(3)})`);
     if (result.ok) break;
   }
@@ -203,6 +224,7 @@ async function loadPolicy(ctx, baseSha) {
 
 // Returns once the `review-gate` status for the current head is final.
 export async function runGate(ctx, number) {
+  ctx.startedAt ??= Date.now();
   const pr = await ctx.gh.get(`/repos/${ctx.repo}/pulls/${number}`);
   if (pr.state !== "open") return ctx.log("pull request is not open");
   if (pr.draft) return ctx.log("draft pull request: no status until it is ready for review");
@@ -220,7 +242,7 @@ export async function runGate(ctx, number) {
 
   if (pr.user.login === "dependabot[bot]") {
     // Dependabot runs get no Actions secrets, so Codex and the backup cannot run here.
-    const d = dependabotDecision({ title: pr.title, body: pr.body || "", labels, files }, policy);
+    const d = dependabotDecision({ title: pr.title, body: pr.body || "", labels, files, branch: pr.head.ref }, policy);
     return d.pass
       ? setStatus(ctx, sha, "success", `Dependabot ${d.reason}: required CI is the gate`)
       : setStatus(ctx, sha, "failure", `Dependabot needs maintainer review: ${d.reason}`);

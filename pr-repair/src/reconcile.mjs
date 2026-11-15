@@ -11,6 +11,7 @@ import { STATUS_CHECK, ciState, classifyThreads, codexState, environmentFailure,
 export const STATE_LABEL = "pr-repair";
 const DASHBOARD = "<!-- pr-repair-dashboard:v1 -->";
 const MAX_TASKS = 6;
+const UPDATED = "Last change: ";
 
 export async function findStateIssue(ctx) {
   const issues = await ctx.gh.paginate(`/repos/${ctx.repo}/issues?state=open&labels=${STATE_LABEL}&creator=${encodeURIComponent(ctx.botLogin)}`);
@@ -69,11 +70,15 @@ async function checksAt(ctx, sha) {
 
 export async function setStatusCheck(ctx, sha, decision, number, { conclusion = conclusionFor(decision.state) } = {}) {
   const existing = (await checksAt(ctx, sha)).filter((c) => c.name === STATUS_CHECK && c.app?.id === ctx.appId).sort((a, b) => b.id - a.id)[0];
+  const summary = `${decision.detail}\n\nPull request #${number}. ${STATES[decision.state] ?? ""}`;
   const body = {
     status: "completed",
     conclusion,
-    output: { title: `pr-repair: ${decision.state}`, summary: `${decision.detail}\n\nPull request #${number}. ${STATES[decision.state] ?? ""}\n\n[Controller run](${ctx.runUrl ?? ""})`.slice(0, 4000) },
+    output: { title: `pr-repair: ${decision.state}`, summary: `${summary}\n\n[Controller run](${ctx.runUrl ?? ""})`.slice(0, 4000) },
   };
+  // The run link changes every run; rewriting an unchanged check is noise.
+  const stripRun = (t) => String(t ?? "").replace(/\n\n\[Controller run\]\([^)]*\)$/, "");
+  if (existing && existing.conclusion === conclusion && existing.output?.title === body.output.title && stripRun(existing.output?.summary) === stripRun(body.output.summary)) return;
   if (existing) await ctx.gh.patch(`/repos/${ctx.repo}/check-runs/${existing.id}`, body);
   else await ctx.gh.post(`/repos/${ctx.repo}/check-runs`, { name: STATUS_CHECK, head_sha: sha, ...body });
 }
@@ -221,19 +226,31 @@ export async function runPlan(ctx) {
   const rows = [];
   const tasks = [];
   const policyDigest = digest(policy);
-  const def = await gh.get(`/repos/${repo}/git/ref/heads/${policy.defaultBranch}`);
-  ctx.baseSha = def.object.sha;
+  ctx.baseSha = ctx.refSha ?? (await gh.get(`/repos/${repo}/git/ref/heads/${policy.defaultBranch}`)).object.sha;
   const gaps = inferenceGaps(policy, { credentialReady: ctx.credentialReady });
+
+  // List the open pull requests first: when nothing is eligible or in flight,
+  // the expensive setup below (production health, workflow runs, config) is skipped.
+  const open = await gh.paginate(`/repos/${repo}/pulls?state=open&base=${policy.defaultBranch}`);
+  const originals = open.filter((p) => policy.eligibility.authors.includes(p.user?.login));
+  const replacements = new Map();
+  for (const p of open.filter((x) => x.user?.login === ctx.botLogin && x.head.ref.startsWith(REPLACEMENT_PREFIX))) {
+    const prov = parseProvenance(p.body);
+    if (prov) replacements.set(prov.root, p);
+  }
+  const pausable = open.filter((x) => x.auto_merge && policy.merge.pauseBranches.includes(x.head.ref) && x.head.repo?.full_name === repo);
+  const idle = !originals.length && !replacements.size && !pausable.length;
+
   const issue = ctx.enabled ? await findStateIssue(ctx) : { number: 0 };
   const state = await loadLedger(ctx, issue);
   state.ledger = state.ledger ?? (await import("./ledger.mjs")).emptyLedger();
   let ledger = await settleStale(ctx, state.ledger);
-  if (ctx.enabled) ledger = await recoverReplacements(ctx, ledger);
-  const production = await productionHealth(gh, repo, policy, ctx.baseSha);
+  if (ctx.enabled && !idle) ledger = await recoverReplacements(ctx, ledger);
+  const production = idle ? { healthy: true, skipped: true, reason: "not checked: no eligible pull requests" } : await productionHealth(gh, repo, policy, ctx.baseSha);
   // A handoff waits until every declared legacy workflow has drained, whatever
   // concurrency group it uses, so two controllers never act at once.
   let exclusiveDetail = null;
-  for (const wf of ctx.exclusiveWorkflows ?? []) {
+  for (const wf of idle ? [] : ctx.exclusiveWorkflows ?? []) {
     for (const status of ["in_progress", "queued", "waiting", "pending", "requested"]) {
       const runs = await gh.paginate(`/repos/${repo}/actions/workflows/${encodeURIComponent(wf)}/runs?status=${status}`, { key: "workflow_runs", max: 100 });
       if (runs.length && !exclusiveDetail) exclusiveDetail = `${wf} run ${runs[0].id} is still ${status}; pr-repair acts once it has finished, so two controllers never act at once.`;
@@ -242,20 +259,15 @@ export async function runPlan(ctx) {
   // GitHub reports "behind" only when protection requires an up-to-date branch.
   const strict = true;
   // Whether Dependabot rebases conflicts itself depends on its own config.
-  const dependabotConfig = (await fileAt(gh, repo, ".github/dependabot.yml", ctx.baseSha)) ?? (await fileAt(gh, repo, ".github/dependabot.yaml", ctx.baseSha));
+  const dependabotConfig = idle ? null : (await fileAt(gh, repo, ".github/dependabot.yml", ctx.baseSha)) ?? (await fileAt(gh, repo, ".github/dependabot.yaml", ctx.baseSha));
 
-  const open = await gh.paginate(`/repos/${repo}/pulls?state=open&base=${policy.defaultBranch}`);
-  const originals = open.filter((p) => policy.eligibility.authors.includes(p.user?.login));
-  const replacements = new Map();
-  for (const p of open.filter((x) => x.user?.login === ctx.botLogin && x.head.ref.startsWith(REPLACEMENT_PREFIX))) {
-    const prov = parseProvenance(p.body);
-    if (prov) replacements.set(prov.root, p);
-  }
-  const closed = await gh.paginate(`/repos/${repo}/pulls?state=closed&base=${policy.defaultBranch}&sort=updated&direction=desc`, { max: 100 }).catch(() => []);
-  const merged = new Map();
-  for (const p of closed.filter((x) => x.merged_at && x.user?.login === ctx.botLogin && x.head.ref.startsWith(REPLACEMENT_PREFIX))) {
-    const prov = parseProvenance(p.body);
-    if (prov && !merged.has(prov.root)) merged.set(prov.root, p);
+  // A merged replacement is found by its head branch, one small call per
+  // eligible original. History is never paginated, and a failed read fails
+  // that pull request's evaluation instead of meaning "never merged".
+  async function mergedReplacement(number) {
+    const branch = `${REPLACEMENT_PREFIX}${number}`;
+    const closed = await gh.get(`/repos/${repo}/pulls?state=closed&head=${encodeURIComponent(`${repo.split("/")[0]}:${branch}`)}&per_page=10`);
+    return closed.filter((x) => x.merged_at && x.user?.login === ctx.botLogin && x.head.ref === branch && parseProvenance(x.body)?.root === number).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at))[0] ?? null;
   }
 
   for (const listed of originals.sort((a, b) => a.number - b.number)) {
@@ -296,7 +308,7 @@ export async function runPlan(ctx) {
         const held = req.moves.find((m) => policy.runtimes.find((r) => r.name === m.runtime)?.majors === "maintainer" && m.from.major !== m.to.major);
         if (held) s.original.eligibility = { eligible: false, reason: `${held.runtime} ${held.from.major} → ${held.to.major} is a major runtime move; this repository keeps those with a maintainer (runtimes[].majors).` };
         const rp = replacements.get(o.number);
-        const mp = merged.get(o.number);
+        const mp = await mergedReplacement(o.number);
         if (mp) {
           r = { pr: mp, merged: true, provenance: parseProvenance(mp.body) };
         } else if (rp) {
@@ -386,7 +398,7 @@ export async function runPlan(ctx) {
 
   // Configured extra branches (for example a weekly audit fix) are paused, never merged.
   if (ctx.enabled && !production.healthy) {
-    for (const p of open.filter((x) => x.auto_merge && policy.merge.pauseBranches.includes(x.head.ref) && x.head.repo?.full_name === repo)) {
+    for (const p of pausable) {
       await gh.graphql("mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}", { id: p.node_id });
       rows.push({ number: p.number, target: p.number, head: p.head.sha, state: "production-paused", detail: production.reason });
     }
@@ -406,7 +418,8 @@ export function dashboard(rows, { gaps, production, runUrl, now }) {
     DASHBOARD,
     "## pr-repair status",
     "",
-    `Updated ${now}${runUrl ? ` by [this run](${runUrl})` : ""}. Production: ${production.healthy ? "healthy" : `**paused** (${esc(production.reason)})`}.`,
+    `Production: ${production.skipped ? esc(production.reason) : production.healthy ? "healthy" : `**paused** (${esc(production.reason)})`}.`,
+    `${UPDATED}${now}${runUrl ? ` by [this run](${runUrl})` : ""}.`,
     gaps.length ? `\n**Paid repair and review are paused:** ${gaps.map(esc).join("; ")}.` : "",
     "",
     "| Update | Working PR | Head | State | Detail |",
@@ -421,5 +434,7 @@ export function dashboard(rows, { gaps, production, runUrl, now }) {
 async function writeDashboard(ctx, issue, rows, extra) {
   const body = dashboard(rows, { ...extra, runUrl: ctx.runUrl, now: ctx.now });
   if (!issue.number) return ctx.log(`[dry-run] dashboard:\n${body}`);
-  if (issue.body !== body) await ctx.gh.patch(`/repos/${ctx.repo}/issues/${issue.number}`, { body });
+  // The timestamp line alone never justifies a write.
+  const stripStamp = (t) => String(t ?? "").replace(/^Last change: .*$/m, "").replace(/^Updated .*$/m, "");
+  if (stripStamp(issue.body) !== stripStamp(body)) await ctx.gh.patch(`/repos/${ctx.repo}/issues/${issue.number}`, { body });
 }
