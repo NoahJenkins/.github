@@ -48,12 +48,16 @@ function realClient(fake, calls = []) {
   return githubClient("t", { fetcher, log: () => {} });
 }
 
-test("paginate: exactly 100 items is a complete page, not an overflow", async () => {
-  const all = Array.from({ length: 100 }, (_, i) => ({ i }));
-  const gh = githubClient("t", { fetcher: async (url) => json(new URL(url).searchParams.get("page") === "1" ? all : []) });
-  assert.equal((await gh.paginate("/x", { max: 2000 })).length, 100);
-  // The cap fails closed: this is why history listings must never be paginated for lookups.
-  await assert.rejects(gh.paginate("/x", { max: 100 }), /more than 100 items/);
+test("paginate: the cap fails closed only above it (100 and 101 items)", async () => {
+  const pages = (n) => {
+    const all = Array.from({ length: n }, (_, i) => ({ i }));
+    return githubClient("t", { fetcher: async (url) => { const p = Number(new URL(url).searchParams.get("page")); return json(all.slice((p - 1) * 100, p * 100)); } });
+  };
+  assert.equal((await pages(100).paginate("/x", { max: 2000 })).length, 100);
+  assert.equal((await pages(100).paginate("/x", { max: 100 })).length, 100, "exactly the cap is not an overflow");
+  await assert.rejects(pages(101).paginate("/x", { max: 100 }), /more than 100 items/);
+  assert.equal((await pages(200).paginate("/x", { max: 200 })).length, 200);
+  await assert.rejects(pages(201).paginate("/x", { max: 200 }), /more than 200 items/);
 });
 
 function world() {
@@ -118,6 +122,17 @@ test("M3: unchanged status checks and dashboards are not rewritten on later runs
   const writes = w.gh.writes.length;
   await runPlan({ ...w.ctx, gh, now: new Date(Date.now() + 3600_000).toISOString(), runUrl: "https://example.invalid/other-run" });
   assert.deepEqual(w.gh.writes.slice(writes).map((x) => `${x.method} ${x.path}`), [], "only the run link and timestamp differ, so nothing is written");
+});
+
+test("H2: a failed dashboard write after the ledger is saved still hands over the reserved tasks", async () => {
+  const w = world();
+  const real = realClient(w.gh);
+  const gh = Object.create(real);
+  let refused = 0;
+  gh.patch = (path, body) => (/\/issues\/\d+$/.test(path) && body?.body?.includes("pr-repair status") ? (refused++, Promise.reject(Object.assign(new Error("502"), { status: 502 }))) : real.patch(path, body));
+  const out = await runPlan({ ...w.ctx, gh });
+  assert.ok(refused > 0, "the dashboard write was attempted and refused");
+  assert.ok(out.tasks.length > 0, "the reservation is not stranded");
 });
 
 test("H3: production health reads newest-first pages and never paginates history", async () => {

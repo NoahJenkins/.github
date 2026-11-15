@@ -407,7 +407,13 @@ export async function runPlan(ctx) {
   if (ctx.enabled) {
     ledger = prune(ledger, new Set(originals.map((p) => p.number)), ctx.now);
     if (JSON.stringify(ledger) !== JSON.stringify(state.ledger)) await saveLedger(ctx, issue, state, ledger);
-    await writeDashboard(ctx, issue, rows, { gaps, production });
+    // Reservations are durable now: a failed dashboard write (writes are never
+    // retried) must not throw away the task outputs and strand the attempts.
+    try {
+      await writeDashboard(ctx, issue, rows, { gaps, production });
+    } catch (e) {
+      ctx.log(`::warning title=pr-repair::dashboard update failed: ${e.message}`);
+    }
   }
   return { tasks, rows, gaps, production };
 }
