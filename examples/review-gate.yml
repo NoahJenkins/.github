@@ -15,6 +15,9 @@ on:
         required: false
         default: ""
 
+# Pin as `@<full sha> # vX.Y.Z` (the latest release of NoahJenkins/.github).
+# Dependabot's github-actions ecosystem keeps both current; review-gate passes
+# those bumps itself at patch and minor.
 permissions: {}
 
 jobs:
@@ -35,7 +38,7 @@ jobs:
       issues: write
       statuses: write
     steps:
-      - uses: NoahJenkins/.github@REPLACE_WITH_SHA # review-gate
+      - uses: NoahJenkins/.github@REPLACE_WITH_SHA # vX.Y.Z
         with:
           mode: gate
           pr-number: ${{ github.event.pull_request.number || inputs.pr }}
@@ -57,7 +60,7 @@ jobs:
       statuses: write
       actions: write
     steps:
-      - uses: NoahJenkins/.github@REPLACE_WITH_SHA # review-gate
+      - uses: NoahJenkins/.github@REPLACE_WITH_SHA # vX.Y.Z
         with:
           mode: sweep
           github-token: ${{ github.token }}

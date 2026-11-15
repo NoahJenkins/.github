@@ -6,8 +6,11 @@ name: pr-repair
 #   plan, publish: the controller App token      (environment: CONTROLLER_ENV)
 #   prepare, validate: read-only GITHUB_TOKEN    (validate runs candidate code in containers)
 #   infer: only the provider credential          (environment: INFERENCE_ENV)
-# Replace: PIN (full shared SHA), CI (the CI workflow name), CONTROLLER_ENV,
-# INFERENCE_ENV, the provider secret name, and the runner labels.
+# Replace: PIN and the version comment (the full SHA of the latest vX.Y.Z
+# release of NoahJenkins/.github, with that tag in the comment; Dependabot's
+# github-actions ecosystem then bumps both together), CI (the CI workflow
+# name), CONTROLLER_ENV, INFERENCE_ENV, the provider secret name, and the
+# runner labels.
 on:
   workflow_run:
     workflows: [CI]
@@ -36,7 +39,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - uses: NoahJenkins/.github/pr-repair@PIN
+      - uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: selftest
 
@@ -82,7 +85,7 @@ jobs:
         run: echo "::warning title=pr-repair::inactive; set the PR_REPAIR_APP_ID variable and PR_REPAIR_APP_PRIVATE_KEY secret (see pr-repair/README.md)"
       - id: engine
         if: vars.PR_REPAIR_APP_ID != ''
-        uses: NoahJenkins/.github/pr-repair@PIN
+        uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: plan
           token: ${{ steps.app.outputs.token }}
@@ -93,7 +96,9 @@ jobs:
 
   prepare:
     needs: plan
-    if: needs.plan.outputs.has-tasks == 'true'
+    # always(): the plan job may report a failed evaluation of one pull request
+    # after it durably reserved work; the reservations must still be carried out.
+    if: always() && !cancelled() && needs.plan.outputs.has-tasks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -107,7 +112,7 @@ jobs:
         task: ${{ fromJSON(needs.plan.outputs.tasks) }}
     steps:
       - if: matrix.task.kind != 'sync'
-        uses: NoahJenkins/.github/pr-repair@PIN
+        uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: prepare
           token: ${{ github.token }}
@@ -127,7 +132,7 @@ jobs:
         task: ${{ fromJSON(needs.plan.outputs.tasks) }}
     steps:
       - if: matrix.task.kind != 'sync'
-        uses: NoahJenkins/.github/pr-repair@PIN
+        uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: infer
           task: ${{ toJSON(matrix.task) }}
@@ -147,7 +152,7 @@ jobs:
         task: ${{ fromJSON(needs.plan.outputs.tasks) }}
     steps:
       - if: matrix.task.kind != 'review'
-        uses: NoahJenkins/.github/pr-repair@PIN
+        uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: validate
           token: ${{ github.token }}
@@ -178,7 +183,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-workflows: write
-      - uses: NoahJenkins/.github/pr-repair@PIN
+      - uses: NoahJenkins/.github/pr-repair@PIN # vX.Y.Z
         with:
           mode: publish
           token: ${{ steps.app.outputs.token }}

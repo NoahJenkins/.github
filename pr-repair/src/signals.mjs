@@ -49,11 +49,12 @@ export async function productionHealth(gh, repo, policy, baseSha) {
   try {
     if (p.kind === "none") return { healthy: true, reason: "no production interlock configured" };
     if (p.kind === "deployments") {
-      const deployments = await gh.paginate(`/repos/${repo}/deployments?environment=${encodeURIComponent(p.environment)}`, { max: 300 });
-      const mine = deployments.filter((d) => !p.creatorId || d.creator?.id === p.creatorId).sort((a, b) => b.id - a.id);
+      // Newest first; one page is enough and history is never walked.
+      const deployments = await gh.get(`/repos/${repo}/deployments?environment=${encodeURIComponent(p.environment)}&per_page=100`);
+      const mine = (Array.isArray(deployments) ? deployments : []).filter((d) => !p.creatorId || d.creator?.id === p.creatorId).sort((a, b) => b.id - a.id);
       const latest = mine[0];
       if (!latest) return { healthy: false, reason: `no ${p.environment} deployment evidence` };
-      const statuses = await gh.paginate(`/repos/${repo}/deployments/${latest.id}/statuses`, { max: 300 });
+      const statuses = await gh.get(`/repos/${repo}/deployments/${latest.id}/statuses?per_page=30`);
       const state = statuses.sort((a, b) => b.id - a.id)[0]?.state;
       if (state !== "success") return { healthy: false, reason: `latest ${p.environment} deployment is ${state ?? "without status"}` };
       return { healthy: true, reason: `latest ${p.environment} deployment succeeded` };
@@ -61,10 +62,15 @@ export async function productionHealth(gh, repo, policy, baseSha) {
     // workflow-run: the newest attempt of the release workflow on the default
     // branch must be complete, successful, for the current base, with every
     // required job and step successful, and an optional promoted ref must match.
-    const runs = await gh.paginate(`/repos/${repo}/actions/workflows/${encodeURIComponent(p.workflow)}/runs?branch=${encodeURIComponent(policy.defaultBranch)}`, { key: "workflow_runs", max: 1000 });
+    // Newest first; only the recent window matters, so an ancient stuck run
+    // can never pause merges and the history is never walked.
+    const page = await gh.get(`/repos/${repo}/actions/workflows/${encodeURIComponent(p.workflow)}/runs?branch=${encodeURIComponent(policy.defaultBranch)}&per_page=10`);
+    const runs = page?.workflow_runs ?? [];
     if (!runs.length) return { healthy: false, reason: `no ${p.workflow} run on ${policy.defaultBranch}` };
-    if (runs.some((r) => r.status !== "completed")) return { healthy: false, reason: `a ${p.workflow} run is still in progress` };
-    const latest = runs.reduce((a, b) => (Date.parse(b.updated_at) > Date.parse(a.updated_at) ? b : a));
+    const started = (r) => Date.parse(r.created_at ?? r.updated_at);
+    const latest = runs.reduce((a, b) => (started(b) > started(a) ? b : a));
+    // Older unfinished runs are superseded; only the newest attempt counts.
+    if (latest.status !== "completed") return { healthy: false, reason: `a ${p.workflow} run is still in progress` };
     if (latest.conclusion !== "success") return { healthy: false, reason: `latest ${p.workflow} run concluded ${latest.conclusion}` };
     if (p.requireCurrentBase !== false && latest.head_sha !== baseSha) return { healthy: false, reason: `latest ${p.workflow} run is for ${latest.head_sha.slice(0, 7)}, not current ${policy.defaultBranch}` };
     if (p.requiredJobs?.length || p.requiredSteps) {

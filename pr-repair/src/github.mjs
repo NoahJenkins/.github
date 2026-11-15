@@ -62,16 +62,18 @@ export function githubClient(token, { api = process.env.GITHUB_API_URL || "https
     del: write("DELETE"),
     // Queries are reads; mutations are writes and honor dry-run.
     graphql: (query, variables) => (/^\s*mutation\b/.test(query) ? write("POST")("/graphql", { query, variables }) : request("POST", "/graphql", { body: { query, variables } })),
+    // Fails closed only when there really are more than `max` items: exactly
+    // `max` (a multiple of 100) costs one extra, empty page read.
     async paginate(path, { key, max = 2000 } = {}) {
       const out = [];
-      for (let page = 1; out.length < max; page++) {
+      for (let page = 1; ; page++) {
         const data = await request("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
         const items = key ? data[key] : data;
         if (!Array.isArray(items)) throw new Error("unexpected paginated response");
         out.push(...items);
+        if (out.length > max) throw new Error(`more than ${max} items at ${path.split("?")[0]}; failing closed`);
         if (items.length < 100) return out;
       }
-      throw new Error(`more than ${max} items at ${path.split("?")[0]}; failing closed`);
     },
   };
   return client;
