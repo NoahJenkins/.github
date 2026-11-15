@@ -1,8 +1,11 @@
 name: test
 
 on:
+  # Every pull request runs it: `test` is a required check, and a check that
+  # never starts would block docs-only PRs.
   pull_request:
-    paths-ignore: ["**/*.md"]
+  # The weekly release sweep runs it before tagging (see release.yml).
+  workflow_call:
   push:
     branches: [main]
     paths-ignore: ["**/*.md"]

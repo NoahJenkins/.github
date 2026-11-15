@@ -12,5 +12,8 @@ updates:
       timezone: America/Chicago
     open-pull-requests-limit: 3
     groups:
+      # Majors come as their own PRs, so one major cannot hold back the
+      # grouped minor and patch bumps that auto-merge.
       actions:
         patterns: ["*"]
+        update-types: [minor, patch]

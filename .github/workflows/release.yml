@@ -12,6 +12,11 @@ on:
     workflows: [test]
     types: [completed]
     branches: [main]
+  # Merges done by auto-merge (Dependabot pin bumps) start no push workflows,
+  # so neither `test` on main nor the trigger above fires for them. This weekly
+  # sweep tests main and releases any action change that is not released yet.
+  schedule:
+    - cron: "17 15 * * 2"
   workflow_dispatch:
     inputs:
       bump:
@@ -27,9 +32,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+
   release:
-    # A manual run releases main only, never another branch's commit.
-    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    needs: test
+    # A manual run releases main only, never another branch's commit. The
+    # sweep releases only after its own test run passed.
+    if: >-
+      always() && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+        || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+        || (github.event_name == 'schedule' && needs.test.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
