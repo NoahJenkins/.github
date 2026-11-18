@@ -14,7 +14,8 @@ plain `vX.Y.Z` tag ([`release.yml`](.github/workflows/release.yml), after `test`
 passes). The bump is a patch by default; label the pull request `semver:minor`
 or `semver:major` to bump that part instead. Docs, tests and workflow-only
 changes do not release. Dependabot pin bumps here merge themselves (minor and
-patch; a major is labelled `dependency-major`), and because merges by
+patch in every ecosystem, and github-actions semver-majors too; any other major
+is labelled `dependency-major`), and because merges by
 auto-merge start no push workflows, a weekly sweep (Tuesdays) tests `main` and
 releases them.
 
