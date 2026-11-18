@@ -108,6 +108,13 @@ export function dependabotDecision({ title = "", body = "", labels = [], files =
   }
   if (!bumps.length) return { pass: false, reason: "could not read the version change" };
   if (bumps.includes("unknown")) return { pass: false, reason: "non-semver version change" };
-  if (bumps.includes("major")) return { pass: false, reason: "major version update" };
+  if (bumps.includes("major")) {
+    // Only a fully readable in-place SHA pin on Dependabot's Actions branch.
+    // An unknown pin, any other ecosystem, or allow_actions_major: false stays held.
+    if (actionsBranch && pins && !pins.includes("unknown") && policy.allow_actions_major === true) {
+      return { pass: true, reason: "major Actions pin update" };
+    }
+    return { pass: false, reason: "major version update" };
+  }
   return { pass: true, reason: pins ? "patch or minor Actions pin update" : "patch or minor update" };
 }

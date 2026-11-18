@@ -17,7 +17,8 @@ on:
 
 # Pin as `@<full sha> # vX.Y.Z` (the latest release of NoahJenkins/.github).
 # Dependabot's github-actions ecosystem keeps both current; review-gate passes
-# those bumps itself at patch and minor.
+# those SHA pin bumps, including semver-major when allow_actions_major is true
+# (the default).
 permissions: {}
 
 jobs:

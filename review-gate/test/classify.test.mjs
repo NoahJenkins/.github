@@ -65,4 +65,7 @@ test("policy files tune defaults but always protect themselves", () => {
   assert.ok(q.always_review_paths.includes(".github/workflows/**"));
   assert.ok(q.always_review_paths.includes("config/tailscale/**"));
   assert.equal(classify([f("src/a.ts", 1)], resolvePolicy({ small_change_lines: 0 })).tier, "review");
+  assert.equal(resolvePolicy(null).allow_actions_major, true);
+  assert.equal(resolvePolicy({ allow_actions_major: false }).allow_actions_major, false);
+  assert.equal(resolvePolicy({ allow_actions_major: "false" }).allow_actions_major, true, "only a boolean overrides the default");
 });
