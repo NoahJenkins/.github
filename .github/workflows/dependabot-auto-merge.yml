@@ -1,8 +1,10 @@
 name: dependabot auto-merge
 
-# Dependabot here only bumps action pins. Arm native auto-merge for minor and
-# patch bumps; the required `test` check makes GitHub wait for green. A major
-# gets a label and waits for a person. No PR code is checked out or run.
+# Arm native auto-merge for minor and patch bumps in every ecosystem, and for
+# every github-actions update, including semver-major. fetch-metadata reports
+# that ecosystem as `github_actions`. A semver-major anywhere else is labelled
+# `dependency-major` and left for a person. The required `test` check makes
+# GitHub wait for green. No PR code is checked out or run.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
@@ -30,9 +32,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
         run: |
           set -euo pipefail
-          if [ "$UPDATE_TYPE" = version-update:semver-major ]; then
+          # Hold a major unless fetch-metadata says github_actions. A security
+          # note in the body does not make any other ecosystem's major eligible.
+          if [ "$UPDATE_TYPE" = version-update:semver-major ] && [ "$ECOSYSTEM" != github_actions ]; then
             gh label create dependency-major --color FBCA04 \
               --description "Major dependency update; needs a person" 2>/dev/null || true
             gh pr edit "$PR_URL" --add-label dependency-major

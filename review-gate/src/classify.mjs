@@ -19,6 +19,8 @@ export const DEFAULT_POLICY = Object.freeze({
   small_change_lines: 15,
   force_review_label: "needs-review",
   max_rounds: 3,
+  // Readable SHA pin bumps on dependabot/github_actions/* may be semver-major.
+  allow_actions_major: true,
 });
 
 // The policy file can only add to or tune the defaults; unknown keys are ignored.
@@ -34,6 +36,7 @@ export function resolvePolicy(raw) {
   if (Number.isInteger(raw.small_change_lines) && raw.small_change_lines >= 0) p.small_change_lines = raw.small_change_lines;
   if (typeof raw.force_review_label === "string" && raw.force_review_label) p.force_review_label = raw.force_review_label;
   if (Number.isInteger(raw.max_rounds) && raw.max_rounds >= 1) p.max_rounds = raw.max_rounds;
+  if (typeof raw.allow_actions_major === "boolean") p.allow_actions_major = raw.allow_actions_major;
   // The policy file always protects itself.
   if (!p.always_review_paths.includes(".github/review-policy.json")) {
     p.always_review_paths = [...p.always_review_paths, ".github/review-policy.json"];

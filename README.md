@@ -14,7 +14,8 @@ plain `vX.Y.Z` tag ([`release.yml`](.github/workflows/release.yml), after `test`
 passes). The bump is a patch by default; label the pull request `semver:minor`
 or `semver:major` to bump that part instead. Docs, tests and workflow-only
 changes do not release. Dependabot pin bumps here merge themselves (minor and
-patch; a major is labelled `dependency-major`), and because merges by
+patch in every ecosystem, and github-actions semver-majors too; any other major
+is labelled `dependency-major`), and because merges by
 auto-merge start no push workflows, a weekly sweep (Tuesdays) tests `main` and
 releases them.
 
@@ -80,11 +81,13 @@ Rules that keep it safe and stall-free:
 - Dependabot runs get no Actions secrets, so Dependabot pull requests are
   decided from their own text: patch/minor semver updates pass (including
   container digest-only bumps on Docker branches and PEP 440 `.postN`/`.devN`
-  bumps), and majors and
-  unreadable versions need a maintainer. A `dependabot/github_actions/*` pull
-  request that touches `.github/` passes only when every changed line is a
-  `uses: owner/repo@<40-hex sha> # vX.Y.Z` pin bump, in place (same line apart
-  from the SHA and comment), at patch or minor. Anything else under `.github/` still needs a maintainer. The trust
+  bumps). A major needs a maintainer, except on a `dependabot/github_actions/*`
+  branch whose every changed line is an in-place
+  `uses: owner/repo@<40-hex sha> # vX.Y.Z` pin bump (same line apart from the
+  SHA and the version comment, so no pin is unreadable). Those Actions majors
+  pass when `allow_actions_major` is true, which is the default. Set it to
+  false to hold them. Unreadable pins, any other `.github/` change, a major in
+  any other ecosystem, and the force-review label still need a maintainer. The trust
   trade-off: the new SHA is not verified to belong to the tag in the comment, so
   a compromised upstream release would merge once required CI is green. Pin
   bumps are the point of Dependabot, and its `cooldown` is the mitigation.
@@ -115,7 +118,9 @@ Rules that keep it safe and stall-free:
 
    Keys: `skip_paths`, `always_review_paths` (replace defaults),
    `extra_always_review_paths` (add), `small_change_lines`,
-   `force_review_label`, `max_rounds`. The policy file always protects itself.
+   `force_review_label`, `max_rounds`, `allow_actions_major` (default `true`;
+   `false` holds GitHub Actions semver-major pin bumps for a maintainer).
+   The policy file always protects itself.
 5. Turn off Codex automatic review for the repository, so Codex reviews only
    what the gate sends it.
 6. Make `review-gate` a required status check, with GitHub Actions as the
