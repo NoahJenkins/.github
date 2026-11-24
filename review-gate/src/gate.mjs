@@ -15,6 +15,13 @@ const MIN = 60000;
 // caller job has timeout-minutes: 40. The backup is also capped by the time
 // actually left, and is retried only when enough remains.
 export const TIMING = {
+  // The caller job bills every minute it waits. Codex usually answers 2.5-3.5
+  // minutes after the request, so check first at 90 s, then every 15 s until
+  // 6 min, then fall back to once a minute. This cuts the wait overshoot
+  // without raising the request rate for long waits.
+  firstPoll: 90000,
+  fastPoll: 15000,
+  fastUntil: 6 * MIN,
   poll: 60000,
   ack: 5 * MIN, // no 👀 from Codex: ask once more (counted from each request)
   codex: 20 * MIN, // no Codex result: run the backup
@@ -27,6 +34,12 @@ const timeLeft = (ctx) => (ctx.startedAt ?? Date.now()) + TIMING.deadline - Date
 const MAX_DIFF_BYTES = 400000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Delay before the next Codex check, given the time since the request.
+export function pollDelay(elapsed) {
+  if (elapsed < TIMING.firstPoll) return TIMING.firstPoll - elapsed;
+  return elapsed < TIMING.fastUntil ? TIMING.fastPoll : TIMING.poll;
+}
 const short = (s, n = 140) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const modelName = (m) => m.replace(/^[^/]+\//, "");
 
@@ -115,7 +128,7 @@ export async function waitForCodex(ctx, number, sha) {
   const start = Date.now();
   let askedAt = start;
   while (Date.now() - start < TIMING.codex) {
-    await sleep(TIMING.poll);
+    await sleep(pollDelay(Date.now() - start));
     const pr = await ctx.gh.get(`/repos/${ctx.repo}/pulls/${number}`);
     if (pr.state !== "open" || pr.head.sha !== sha) return { done: true, kind: "moved" };
     const v = await readCodex(ctx, number, sha, requestedAt);
