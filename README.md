@@ -70,7 +70,7 @@ Rules that keep it safe and stall-free:
 - Labels can only add a review (`needs-review`); nothing can skip one.
 - Every path ends in a final status. Errors set `failure: Review unavailable…`,
   and a 34-minute internal deadline sits inside the job's 40-minute timeout.
-  Codex gets 20 minutes (polled every minute, reading only comments since the
+  Codex gets 20 minutes (polled at 90 s, every 15 s until 6 min, then every minute, reading only comments since the
   request), and the backup review gets whatever is left of the deadline and is
   retried only when 8 minutes remain.
 - The `sweep` mode (scheduled in the caller) retries a missing, stalled, or
